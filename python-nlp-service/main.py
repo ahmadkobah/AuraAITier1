@@ -1,10 +1,3 @@
-"""
-NLP (Natural Language Processing) Service
-
-FastAPI-based microservice for comprehensive text analysis including
-sentiment analysis, entity recognition, keyword extraction, summarization, etc.
-"""
-
 import sys
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks

@@ -1,10 +1,3 @@
-"""
-ICR (Intelligent Character Recognition) Service
-
-FastAPI-based microservice for handwriting recognition and processing.
-Specialized for handwritten text, signatures, and forms.
-"""
-
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -22,7 +15,6 @@ import hashlib
 import shutil
 import tempfile
 from pathlib import Path
-
 import httpx
 from uuid import uuid4
 from pydantic import BaseModel

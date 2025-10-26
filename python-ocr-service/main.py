@@ -1,10 +1,4 @@
-﻿"""
-DeepSeek OCR Service
---------------------
-FastAPI wrapper around the deepseek-ai/DeepSeek-OCR model so the document pipeline
-can submit jobs via /ocr/process and /jobs endpoints.
-"""
-
+﻿
 import asyncio
 import hashlib
 import os
@@ -15,7 +9,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
-
 import httpx
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
