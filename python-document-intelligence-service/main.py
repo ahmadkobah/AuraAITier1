@@ -1,25 +1,3 @@
-"""
-SmartDockAI Document Intelligence Service
-=======================================
-
-Main FastAPI application for advanced document understanding and intelligence.
-Provides ML-based document classification, entity extraction, template matching,
-automated validation, and intelligent routing capabilities.
-
-Features:
-- Intelligent document classification using ML models
-- Advanced entity extraction with customizable rules
-- Document template matching and management
-- Automated validation with business rules
-- Intelligent document routing and workflow automation
-- Real-time processing analytics and monitoring
-- Batch processing capabilities
-- RESTful API with comprehensive documentation
-
-Author: SmartDockAI Team
-Version: 1.0.0
-"""
-
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
