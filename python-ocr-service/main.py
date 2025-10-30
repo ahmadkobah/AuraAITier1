@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 import httpx
+from PIL import Image
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,7 +48,7 @@ DEFAULT_PROMPT = os.getenv(
     "OCR_DEFAULT_PROMPT",
     "<image>\n<|grounding|>Convert the document to markdown.",
 )
-MODEL_NAME = os.getenv("OCR_MODEL_NAME", "deepseek-ai/DeepSeek-OCR")
+MODEL_NAME = os.getenv("OCR_MODEL_NAME", "microsoft/trocr-base-printed")
 OUTPUT_DIR = Path(os.getenv("OCR_OUTPUT_DIR", "./ocr_outputs"))
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.bfloat16 if DEVICE.type == "cuda" else torch.float32
@@ -55,30 +56,22 @@ DTYPE = torch.bfloat16 if DEVICE.type == "cuda" else torch.float32
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-class DeepSeekOCREngine:
+class TrOCREngine:
     def __init__(self):
-        self.model = None
-        self.tokenizer = None
+        self.pipeline = None
         self.lock = asyncio.Lock()
 
     async def ensure_loaded(self):
-        if self.model is not None and self.tokenizer is not None:
+        if self.pipeline is not None:
             return
         async with self.lock:
-            if self.model is not None and self.tokenizer is not None:
+            if self.pipeline is not None:
                 return
             await asyncio.get_running_loop().run_in_executor(None, self._load_sync)
 
     def _load_sync(self):
-        attn_kwargs = {"_attn_implementation": "flash_attention_2"} if DEVICE.type == "cuda" else {}
-        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-        self.model = AutoModel.from_pretrained(
-            MODEL_NAME,
-            trust_remote_code=True,
-            use_safetensors=True,
-            **attn_kwargs,
-        )
-        self.model = self.model.eval().to(DEVICE).to(DTYPE)
+        from transformers import pipeline
+        self.pipeline = pipeline("image-to-text", model=MODEL_NAME, device=DEVICE)
 
     async def run_inference(
         self,
@@ -97,19 +90,12 @@ class DeepSeekOCREngine:
 
         def _infer():
             start = time.time()
-            result = self.model.infer(
-                self.tokenizer,
-                prompt=prompt_text,
-                image_file=str(image_path),
-                output_path=str(job_output_dir),
-                base_size=base_size,
-                image_size=image_size,
-                crop_mode=crop_mode,
-                save_results=save_results,
-                test_compress=test_compress,
-            )
+            # Use the transformers pipeline for OCR
+            image = Image.open(image_path).convert('RGB')
+            result = self.pipeline(image)
+            generated_text = result[0]['generated_text'] if result else ""
             duration = time.time() - start
-            return result, duration
+            return generated_text, duration
 
         loop = asyncio.get_running_loop()
         text, duration = await loop.run_in_executor(None, _infer)
@@ -157,8 +143,8 @@ def resolve_source_file(source: FileReference) -> Tuple[Path, Optional[Path]]:
     return path, None
 
 
-engine = DeepSeekOCREngine()
-app = FastAPI(title="DeepSeek OCR Service", version="1.0.0")
+engine = TrOCREngine()
+app = FastAPI(title="TrOCR OCR Service", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
