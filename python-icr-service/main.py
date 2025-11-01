@@ -1,3 +1,23 @@
+"""
+ICR Service - Intelligent Character Recognition
+
+This service provides handwriting recognition and signature detection using
+Microsoft's TrOCR (Transformer-based OCR) pre-trained handwriting model.
+
+Features:
+- Handwriting text extraction using transformers
+- Signature detection and verification
+- Form field processing
+- Training data collection for continuous improvement
+- GPU acceleration support
+- Pre-trained model (microsoft/trocr-base-handwritten) - production ready
+
+Training Status:
+- ✅ Pre-trained model ready to use
+- ⚠️ Optional: Collect data from production for fine-tuning
+- 📊 Training pipeline available in app/training/
+"""
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse

@@ -1,3 +1,30 @@
+"""
+NLP Service - Natural Language Processing
+
+This service provides advanced text analysis capabilities including sentiment analysis,
+entity recognition, keyword extraction, text summarization, and more.
+
+Features:
+- Sentiment analysis using RoBERTa
+- Named Entity Recognition (NER) using BERT
+- Text summarization using BART
+- Keyword extraction
+- Language detection
+- Multi-task processing
+- GPU acceleration support
+
+Training Status:
+- ✅ Pre-trained models ready to use (RoBERTa, BERT, BART)
+- ⚠️ Optional: Fine-tune on domain-specific data if needed
+- 📊 Training pipeline available in app/training/
+
+Why Separate NLP Service?
+- Heavy ML dependencies (spaCy, transformers, NLTK)
+- Independent scaling requirements
+- Isolated computational resources
+- Different deployment cycles from OCR/ICR
+"""
+
 import sys
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks

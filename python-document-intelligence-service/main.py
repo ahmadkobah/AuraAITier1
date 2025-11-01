@@ -1,3 +1,31 @@
+"""
+Document Intelligence Service - Main Orchestrator
+
+This service coordinates all document processing capabilities, integrating OCR, ICR,
+and NLP services to provide comprehensive document understanding.
+
+Features:
+- Multi-service orchestration (OCR + ICR + NLP)
+- Document classification and routing
+- Entity extraction and validation
+- Template matching
+- Signature detection integration
+- Company/department-based organization
+- Projectena-compatible output format
+- Network scanner integration
+
+Integration Points:
+- OCR Service (port 8000): Text extraction from printed documents
+- ICR Service (port 8001): Handwriting and signature detection
+- NLP Service (port 8002): Text analysis and entity recognition
+- Projectena Backend: Document management system
+
+Endpoints:
+- POST /upload/analyze: General document upload
+- POST /upload/analyze/projectena: Projectena-compatible format
+- POST /upload/scan: Network scanner integration
+"""
+
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse

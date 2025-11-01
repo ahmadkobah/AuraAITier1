@@ -1,0 +1,14 @@
+OCR SERVICE CONFIGURATION
+======================================================================
+Timestamp: 2025-11-01 15:10:30
+Python: C:\Users\Ahmad\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\python.exe
+PyTorch: 2.7.1+cu118
+CUDA Available: True
+CUDA Version: 11.8
+GPU: NVIDIA GeForce RTX 3050 Laptop GPU
+
+Engine: DeepSeek-VL OCR
+USE_DEEPSEEK: True
+Device: cuda
+Model: deepseek-ai/DeepSeek-OCR
+======================================================================
