@@ -5,6 +5,7 @@ torch==2.6.0
 scikit-learn==1.6.1
 numpy==2.2.2
 pandas==2.2.3
+spacy==3.7.5
 
 # Advanced NLP Libraries
 nltk==3.9.1

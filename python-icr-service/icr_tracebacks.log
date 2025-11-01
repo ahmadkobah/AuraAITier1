@@ -1,0 +1,22 @@
+
+---[2025-10-31T13:52:37.775760] Request handling traceback---
+Traceback (most recent call last):
+  File "c:\Users\Ahmad\Documents\GitHub\adaptive-Dokumentenverarbeitung\python-icr-service\main.py", line 421, in icr_process
+    handwriting_entry, signatures = await analyze_handwriting_image(image, fields_of_interest)
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\Ahmad\Documents\GitHub\adaptive-Dokumentenverarbeitung\python-icr-service\main.py", line 295, in analyze_handwriting_image
+    processed_image = preprocessing.get("preprocessed_image") or image
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+
+
+---[2025-10-31T13:56:03.757447] Request handling traceback---
+Traceback (most recent call last):
+  File "c:\Users\Ahmad\Documents\GitHub\adaptive-Dokumentenverarbeitung\python-icr-service\main.py", line 421, in icr_process
+    handwriting_entry, signatures = await analyze_handwriting_image(image, fields_of_interest)
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\Ahmad\Documents\GitHub\adaptive-Dokumentenverarbeitung\python-icr-service\main.py", line 295, in analyze_handwriting_image
+    processed_image = preprocessing.get("preprocessed_image") or image
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+

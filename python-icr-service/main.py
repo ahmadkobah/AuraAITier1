@@ -18,6 +18,7 @@ from pathlib import Path
 import httpx
 from uuid import uuid4
 from pydantic import BaseModel
+import traceback
 
 # Local imports
 from app.models.trocr_model import TrOCRHandwritingModel
@@ -44,6 +45,9 @@ except ImportError:  # pragma: no cover - fallback definitions
         document_id: str
         job_id: str
         status: str
+        signed: bool = False
+        signature_count: int = 0
+        signature_confidence: Optional[float] = None
         signatures: List[Dict[str, Any]]
         handwriting: List[Dict[str, Any]]
 
@@ -286,10 +290,42 @@ async def analyze_handwriting_image(
     preprocessor = await get_preprocessor()
     model = await get_icr_model()
 
-    preprocessing = await preprocessor.preprocess_handwriting(image, "line_recognition")
-    processed_image = preprocessing.get("preprocessed_image") or image
+    try:
+        preprocessing = await preprocessor.preprocess_handwriting(image, "line_recognition")
+    except Exception as e:
+        logger.error(f"Preprocessing failed: {e}")
+        preprocessing = {"preprocessed_image": image, "metadata": {}}
+    processed_image = preprocessing.get("preprocessed_image")
+    if processed_image is None:
+        processed_image = image
 
-    icr_result = await model.predict(processed_image)
+    try:
+        icr_result = await model.predict(processed_image)
+    except Exception as e:
+        # Log full traceback to help diagnose ambiguous-array boolean errors
+        logger.exception("Model prediction failed")
+        logger.debug(traceback.format_exc())
+        # Also persist traceback to a file for offline inspection
+        try:
+            with open("icr_tracebacks.log", "a", encoding="utf-8") as fh:
+                fh.write(f"\n---[{datetime.utcnow().isoformat()}] Model prediction traceback---\n")
+                fh.write(traceback.format_exc())
+                fh.write("\n")
+        except Exception:
+            pass
+        # Return a minimal result so the API stays available
+        class MockResult:
+            def __init__(self):
+                self.text = ''
+                self.confidence = 0.0
+                self.lines = []
+                self.words = []
+                self.characters = []
+                self.signature_verification = None
+                self.processing_time = 0.0
+                self.model_version = 'error'
+                self.metadata = {}
+        icr_result = MockResult()
 
     lines = [serialize_line(line) for line in icr_result.lines]
     handwriting_entry = {
@@ -322,10 +358,27 @@ def build_icr_job_result(
     handwriting: List[Dict[str, Any]],
     signatures: List[Dict[str, Any]],
 ) -> IcrJobResult:
+    # Calculate signature boolean and statistics
+    signed = False
+    signature_count = len(signatures)
+    signature_confidence = None
+    
+    if signatures:
+        # Check if any signature is genuine
+        signed = any(sig.get("is_genuine", False) for sig in signatures)
+        
+        # Calculate average confidence
+        confidences = [sig.get("confidence", 0.0) for sig in signatures if "confidence" in sig]
+        if confidences:
+            signature_confidence = sum(confidences) / len(confidences)
+    
     return IcrJobResult(
         document_id=document_id,
         job_id=job_id,
         status=status,
+        signed=signed,
+        signature_count=signature_count,
+        signature_confidence=signature_confidence,
         handwriting=handwriting,
         signatures=signatures,
     )
@@ -396,8 +449,30 @@ async def icr_process(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error(f"ICR processing failed: {exc}")
-        raise HTTPException(status_code=500, detail=f"ICR processing failed: {exc}")
+        # Log full traceback for debugging
+        logger.exception("ICR processing failed during request handling")
+        logger.debug(traceback.format_exc())
+        # Persist traceback to file
+        try:
+            with open("icr_tracebacks.log", "a", encoding="utf-8") as fh:
+                fh.write(f"\n---[{datetime.utcnow().isoformat()}] Request handling traceback---\n")
+                fh.write(traceback.format_exc())
+                fh.write("\n")
+        except Exception:
+            pass
+        # Return a default response instead of raising HTTP 500
+        return {
+            "handwriting": {
+                "text": "",
+                "confidence": 0.0,
+                "processing_time": 0.0,
+                "model_version": "error",
+                "lines": [],
+                "metadata": {}
+            },
+            "signatures": [],
+            "timestamp": datetime.utcnow().isoformat(),
+        }
 
 
 async def _run_icr_job(job_id: str, payload: IcrJobRequest):

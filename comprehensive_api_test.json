@@ -1,0 +1,155 @@
+{
+  "OCR Service": {
+    "file": "python-ocr-service\\main.py",
+    "port": 8000,
+    "endpoints": [
+      {
+        "method": "POST",
+        "path": "/ocr/process"
+      },
+      {
+        "method": "GET",
+        "path": "/health"
+      }
+    ],
+    "upload_support": true,
+    "upload_endpoints": [
+      "/ocr/process"
+    ],
+    "endpoint_count": 2
+  },
+  "NLP Service": {
+    "file": "python-nlp-service\\main.py",
+    "port": 8002,
+    "endpoints": [
+      {
+        "method": "POST",
+        "path": "/nlp/analyze"
+      },
+      {
+        "method": "GET",
+        "path": "/"
+      },
+      {
+        "method": "GET",
+        "path": "/health"
+      },
+      {
+        "method": "POST",
+        "path": "/analyze/sentiment"
+      },
+      {
+        "method": "POST",
+        "path": "/analyze/entities"
+      },
+      {
+        "method": "POST",
+        "path": "/analyze/keywords"
+      },
+      {
+        "method": "POST",
+        "path": "/analyze/summarize"
+      },
+      {
+        "method": "POST",
+        "path": "/analyze/language"
+      },
+      {
+        "method": "POST",
+        "path": "/analyze/classify"
+      },
+      {
+        "method": "POST",
+        "path": "/analyze/similarity"
+      },
+      {
+        "method": "POST",
+        "path": "/analyze/batch"
+      },
+      {
+        "method": "GET",
+        "path": "/models/info"
+      }
+    ],
+    "upload_support": false,
+    "upload_endpoints": [],
+    "endpoint_count": 12
+  },
+  "ICR Service": {
+    "file": "python-icr-service\\main.py",
+    "port": 8001,
+    "endpoints": [
+      {
+        "method": "GET",
+        "path": "/"
+      },
+      {
+        "method": "GET",
+        "path": "/health"
+      },
+      {
+        "method": "POST",
+        "path": "/icr/process"
+      },
+      {
+        "method": "POST",
+        "path": "/recognize"
+      },
+      {
+        "method": "POST",
+        "path": "/preprocess"
+      },
+      {
+        "method": "POST",
+        "path": "/training/add_sample"
+      },
+      {
+        "method": "GET",
+        "path": "/training/stats"
+      },
+      {
+        "method": "POST",
+        "path": "/training/start"
+      },
+      {
+        "method": "GET",
+        "path": "/model/info"
+      }
+    ],
+    "upload_support": true,
+    "upload_endpoints": [
+      "/icr/process",
+      "/recognize",
+      "/preprocess",
+      "/training/add_sample"
+    ],
+    "endpoint_count": 9
+  },
+  "Document Intelligence Service": {
+    "file": "python-document-intelligence-service\\main.py",
+    "port": 8003,
+    "endpoints": [
+      {
+        "method": "GET",
+        "path": "/health"
+      },
+      {
+        "method": "POST",
+        "path": "/batch/process"
+      },
+      {
+        "method": "POST",
+        "path": "/upload/analyze"
+      },
+      {
+        "method": "GET",
+        "path": "/analytics/stats"
+      }
+    ],
+    "upload_support": true,
+    "upload_endpoints": [
+      "/upload/analyze"
+    ],
+    "endpoint_count": 4
+  }
+}

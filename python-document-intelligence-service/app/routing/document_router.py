@@ -335,6 +335,15 @@ class DocumentRouter:
             # Calculate processing time
             processing_time = (datetime.utcnow() - start_time).total_seconds()
             
+            # Generate folder paths for file storage
+            company_id = metadata.get("company_id") if metadata else None
+            department_id = metadata.get("department_id") if metadata else None
+            folder_paths = self.generate_folder_path(
+                company_id,
+                department_id,
+                document_type
+            )
+            
             # Create routing result
             routing_result = {
                 "recommended_actions": recommended_actions,
@@ -344,6 +353,7 @@ class DocumentRouter:
                 "destination_details": destination_result["details"],
                 "workflow_suggestions": workflow_result["workflows"],
                 "estimated_completion": workflow_result["estimated_completion"],
+                "folder_paths": folder_paths,  # NEW: folder structure for storage
                 "processing_time": processing_time,
                 "document_context": document_context,
                 "routing_metadata": {
@@ -852,6 +862,76 @@ class DocumentRouter:
         except Exception as e:
             logger.error(f"Failed to get routing stats: {str(e)}")
             return {"error": str(e)}
+    
+    def generate_folder_path(
+        self,
+        company_id: Optional[str],
+        department_id: Optional[str],
+        document_type: Optional[str],
+        date: Optional[datetime] = None
+    ) -> Dict[str, str]:
+        """
+        Generate folder path structure for document storage.
+        
+        Args:
+            company_id: Company identifier
+            department_id: Department identifier
+            document_type: Type of document (invoice, contract, etc.)
+            date: Document date (defaults to current date)
+            
+        Returns:
+            Dictionary with folder path information
+        """
+        try:
+            if date is None:
+                date = datetime.utcnow()
+            
+            year = date.strftime("%Y")
+            month = date.strftime("%m")
+            day = date.strftime("%d")
+            
+            # Clean document type for folder name
+            clean_doc_type = (document_type or "general").lower().replace(" ", "_")
+            
+            # Build folder hierarchy
+            if company_id and department_id:
+                # Full hierarchy: /company/department/doc_type/year/month/
+                base_path = f"/{company_id}/{department_id}/{clean_doc_type}"
+            elif company_id:
+                # Company hierarchy: /company/doc_type/year/month/
+                base_path = f"/{company_id}/{clean_doc_type}"
+            elif department_id:
+                # Department hierarchy: /departments/department/doc_type/year/month/
+                base_path = f"/departments/{department_id}/{clean_doc_type}"
+            else:
+                # Default hierarchy: /documents/doc_type/year/month/
+                base_path = f"/documents/{clean_doc_type}"
+            
+            # Add date-based subfolder structure
+            dated_path = f"{base_path}/{year}/{month}"
+            full_path_with_day = f"{base_path}/{year}/{month}/{day}"
+            
+            return {
+                "base_path": base_path,
+                "dated_path": dated_path,
+                "full_path": full_path_with_day,
+                "year": year,
+                "month": month,
+                "day": day,
+                "document_type": clean_doc_type,
+                "company_id": company_id,
+                "department_id": department_id
+            }
+            
+        except Exception as e:
+            logger.error(f"Folder path generation error: {str(e)}")
+            # Return safe default path
+            return {
+                "base_path": "/documents/general",
+                "dated_path": "/documents/general",
+                "full_path": "/documents/general",
+                "error": str(e)
+            }
     
     async def add_custom_destination(self, destination_id: str, destination_config: Dict[str, Any]) -> Dict[str, Any]:
         """Add a custom routing destination."""

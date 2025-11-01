@@ -500,7 +500,8 @@ class DocumentClassificationModel:
             # Get sub-categories
             sub_categories = []
             if best_type in self.document_types:
-                sub_categories = self.document_types[best_type].get('sub_categories', [])
+                raw_subs = self.document_types[best_type].get('sub_categories', [])
+                sub_categories = [{"name": sub, "confidence": 1.0} for sub in raw_subs]
             
             result = {
                 'document_type': best_type,

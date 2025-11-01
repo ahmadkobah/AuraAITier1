@@ -1,0 +1,31 @@
+{
+  "ocr_service": {
+    "file": "python-ocr-service\\main.py",
+    "has_upload_endpoint": false,
+    "has_file_upload_support": true,
+    "has_status_tracking": true,
+    "has_ocr_endpoint": true,
+    "port": 8000
+  },
+  "nlp_service": {
+    "file": "python-nlp-service\\main.py",
+    "has_classification": true,
+    "has_analysis": true,
+    "has_nlp_endpoint": true,
+    "port": 8002
+  },
+  "icr_service": {
+    "file": "python-icr-service\\main.py",
+    "has_upload_support": true,
+    "has_handwriting_recognition": true,
+    "has_signature_detection": true,
+    "port": 8001
+  },
+  "document_intelligence_service": {
+    "file": "python-document-intelligence-service\\main.py",
+    "has_upload_support": true,
+    "has_classification": true,
+    "has_extraction": true,
+    "has_routing": true
+  }
+}

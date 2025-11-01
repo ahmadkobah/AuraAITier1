@@ -304,6 +304,9 @@ class IntelligenceResult(BaseModel):
     routing: RoutingResult
     overall_processing_time: float
     document_summary: Dict[str, Any]
+    company_id: Optional[str] = None
+    department_id: Optional[str] = None
+    user_id: Optional[str] = None
 
 # Application startup
 @app.on_event("startup")
@@ -538,7 +541,10 @@ async def process_batch(request: BatchProcessingRequest, background_tasks: Backg
 async def analyze_uploaded_file(
     file: UploadFile = File(...),
     analysis_type: str = Form("full"),
-    confidence_threshold: float = Form(0.8)
+    confidence_threshold: float = Form(0.8),
+    company_id: Optional[str] = Form(None),
+    department_id: Optional[str] = Form(None),
+    user_id: Optional[str] = Form(None)
 ):
     """Upload and analyze document file."""
     try:
@@ -573,21 +579,332 @@ async def analyze_uploaded_file(
                 "extraction_method": extraction_metadata.get("extraction_method", "unknown"),
                 "processing_time": extraction_result.get("processing_time", 0.0),
                 "nlp_analysis": nlp_analysis,
-                "extraction_error": extraction_result.get("error")
+                "extraction_error": extraction_result.get("error"),
+                "company_id": company_id,
+                "department_id": department_id,
+                "user_id": user_id
             }
         )
         
         # Perform analysis based on type
         if analysis_type == "full":
-            return await analyze_document_intelligence(document)
+            result = await analyze_document_intelligence(document)
+            # Add IDs to Pydantic model
+            result.company_id = company_id
+            result.department_id = department_id
+            result.user_id = user_id
+            return result
         elif analysis_type == "classification":
-            return await classify_document(ClassificationRequest(document=document))
+            result = await classify_document(ClassificationRequest(
+                document=document,
+                confidence_threshold=confidence_threshold,
+                return_all_predictions=False
+            ))
+            # Convert to dict for classification results
+            result_dict = result if isinstance(result, dict) else result.dict()
+            result_dict["company_id"] = company_id
+            result_dict["department_id"] = department_id
+            result_dict["user_id"] = user_id
+            return result_dict
         else:
             raise HTTPException(status_code=400, detail="Invalid analysis type")
             
     except Exception as e:
         logger.error(f"File upload analysis error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"File analysis failed: {str(e)}")
+
+# Projectena-compatible upload endpoint
+@app.post("/upload/analyze/projectena")
+async def analyze_for_projectena(
+    file: UploadFile = File(...),
+    companyId: str = Form(...),
+    departmentId: str = Form(...),
+    uploadedBy: str = Form(...),
+    folderId: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None)  # JSON string array
+):
+    """
+    Upload and analyze document file in Projectena-compatible format.
+    
+    This endpoint returns results formatted for Projectena's DocumentModel.
+    It processes the document through OCR, ICR, NLP, and classification,
+    then returns metadata compatible with MongoDB storage.
+    """
+    try:
+        import json
+        from datetime import datetime
+        
+        logger.info(f"Projectena upload - File: {file.filename}, Company: {companyId}, Dept: {departmentId}")
+        
+        # Read file content
+        content = await file.read()
+        file_size = len(content)
+        
+        # Extract text using appropriate service
+        extraction_result = await extract_text_from_file(
+            content,
+            file.filename or "unknown",
+            file.content_type or "application/octet-stream"
+        )
+        
+        # Get extracted text and metadata
+        text_content = extraction_result.get("text", "")
+        extraction_metadata = extraction_result.get("metadata", {})
+        
+        # Enhance with NLP analysis if text was extracted
+        nlp_analysis = {}
+        if text_content and not extraction_result.get("error"):
+            nlp_analysis = await analyze_text_with_nlp(text_content)
+        
+        # Create document input with Projectena context
+        document = DocumentInput(
+            content=text_content,
+            filename=file.filename,
+            metadata={
+                "content_type": file.content_type,
+                "file_size": file_size,
+                "upload_timestamp": datetime.utcnow().isoformat(),
+                "extraction_confidence": extraction_result.get("confidence", 0.0),
+                "extraction_method": extraction_metadata.get("extraction_method", "unknown"),
+                "company_id": companyId,
+                "department_id": departmentId,
+                "user_id": uploadedBy,
+                "folder_id": folderId
+            }
+        )
+        
+        # Run full intelligence analysis
+        result = await analyze_document_intelligence(document)
+        
+        # Parse tags if provided
+        tag_list = []
+        if tags:
+            try:
+                tag_list = json.loads(tags) if isinstance(tags, str) else tags
+            except:
+                tag_list = []
+        
+        # Extract NLP keywords as additional tags
+        nlp_keywords = nlp_analysis.get("keywords", []) if nlp_analysis else []
+        auto_tags = tag_list + nlp_keywords[:5]  # Combine manual + auto tags (limit 5 auto)
+        
+        # Get ICR metadata for signature detection
+        icr_metadata = extraction_result.get("metadata", {}).get("icr_result", {})
+        signed = icr_metadata.get("signed", False)
+        signature_info = {
+            "signed": signed,
+            "signature_count": icr_metadata.get("signature_count", 0),
+            "confidence": icr_metadata.get("signature_confidence"),
+            "signatures": icr_metadata.get("signatures", [])
+        }
+        
+        # Get classification info
+        classification = result.classification if hasattr(result, 'classification') else {}
+        if isinstance(classification, dict):
+            document_type = classification.get("document_type", "unknown")
+            confidence_score = classification.get("confidence", 0.0)
+        else:
+            document_type = getattr(classification, 'document_type', 'unknown')
+            confidence_score = getattr(classification, 'confidence', 0.0)
+        
+        # Get extraction entities
+        extraction = result.extraction if hasattr(result, 'extraction') else {}
+        if isinstance(extraction, dict):
+            entities = extraction.get("entities", {})
+        else:
+            entities = getattr(extraction, 'entities', {})
+        
+        # Get routing info for folder paths
+        routing = result.routing if hasattr(result, 'routing') else {}
+        if isinstance(routing, dict):
+            folder_paths = routing.get("folder_paths", {})
+        else:
+            folder_paths = getattr(routing, 'folder_paths', {})
+        
+        # Generate safe filename
+        import re
+        safe_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', file.filename or "document")
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        unique_filename = f"{timestamp}_{safe_filename}"
+        
+        # Build Projectena-compatible response
+        projectena_response = {
+            # Core document fields
+            "filename": unique_filename,
+            "originalName": file.filename,
+            "size": file_size,
+            "contentType": file.content_type,
+            
+            # Ownership & organization
+            "uploadedBy": uploadedBy,
+            "companyId": companyId,
+            "departmentId": departmentId,
+            "folderId": folderId,
+            
+            # Document classification
+            "docType": document_type,
+            "tags": auto_tags[:10],  # Limit to 10 tags
+            
+            # OCR processing status
+            "ocrStatus": "completed" if text_content else "failed",
+            
+            # Extracted metadata (all processing results)
+            "extractedMetadata": {
+                # OCR text
+                "ocr_text": text_content,
+                "ocr_confidence": extraction_result.get("confidence", 0.0),
+                "extraction_method": extraction_metadata.get("extraction_method", "unknown"),
+                
+                # Classification
+                "document_type": document_type,
+                "classification_confidence": confidence_score,
+                "classification_details": classification if isinstance(classification, dict) else {},
+                
+                # Entity extraction
+                "entities": entities,
+                
+                # NLP analysis
+                "nlp_analysis": nlp_analysis,
+                
+                # Signature detection
+                "signature_info": signature_info,
+                
+                # Folder paths
+                "folder_paths": folder_paths,
+                
+                # Processing summary
+                "processing_summary": {
+                    "total_time": result.overall_processing_time if hasattr(result, 'overall_processing_time') else 0.0,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "services_used": ["ocr", "icr", "nlp", "classification", "routing"]
+                }
+            },
+            
+            # Additional fields for Projectena
+            "processingTime": result.overall_processing_time if hasattr(result, 'overall_processing_time') else 0.0,
+            "confidenceScore": confidence_score,
+            "signed": signed,
+            
+            # Suggested folder path
+            "suggestedPath": folder_paths.get("full_path", f"/{companyId}/{departmentId}/{document_type}") if folder_paths else f"/{companyId}/{departmentId}/{document_type}",
+            
+            # Status
+            "status": "processed",
+            "processedAt": datetime.utcnow().isoformat()
+        }
+        
+        logger.info(f"✅ Projectena processing complete - Type: {document_type}, Signed: {signed}")
+        
+        return projectena_response
+        
+    except Exception as e:
+        logger.error(f"Projectena upload error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Projectena upload failed: {str(e)}")
+
+# Scanner integration endpoint
+@app.post("/upload/scan")
+async def receive_from_scanner(
+    file: UploadFile = File(...),
+    scanner_id: str = Form(...),
+    scan_settings: Optional[str] = Form(None),  # JSON string
+    company_id: Optional[str] = Form(None),
+    department_id: Optional[str] = Form(None),
+    user_id: Optional[str] = Form(None)
+):
+    """
+    Receive scanned documents from network scanners.
+    
+    Supported scanner types:
+    - Network scanners (Canon, HP, Xerox, etc.)
+    - MFPs (Multi-Function Printers)
+    - Document scanners with network capability
+    
+    Scanner Configuration:
+    Configure your scanner to POST to: http://<server>:8003/upload/scan
+    """
+    try:
+        import json
+        
+        logger.info(f"Document received from scanner: {scanner_id}")
+        
+        # Parse scan settings if provided
+        settings = {}
+        if scan_settings:
+            try:
+                settings = json.loads(scan_settings)
+            except:
+                logger.warning(f"Failed to parse scan settings: {scan_settings}")
+        
+        # Read scanned file
+        content = await file.read()
+        
+        logger.info(f"Scanner file - Name: {file.filename}, Size: {len(content)} bytes, Settings: {settings}")
+        
+        # Extract text using appropriate service
+        extraction_result = await extract_text_from_file(
+            content,
+            file.filename or f"scan_{scanner_id}_{datetime.utcnow().timestamp()}.pdf",
+            file.content_type or "application/pdf"
+        )
+        
+        # Get extracted text
+        text_content = extraction_result.get("text", "")
+        extraction_metadata = extraction_result.get("metadata", {})
+        
+        # Enhance with NLP analysis
+        nlp_analysis = {}
+        if text_content and not extraction_result.get("error"):
+            nlp_analysis = await analyze_text_with_nlp(text_content)
+        
+        # Create document input with scanner metadata
+        document = DocumentInput(
+            content=text_content,
+            filename=file.filename,
+            metadata={
+                "source": "scanner",
+                "scanner_id": scanner_id,
+                "scan_settings": settings,
+                "content_type": file.content_type,
+                "file_size": len(content),
+                "scan_timestamp": datetime.utcnow().isoformat(),
+                "company_id": company_id,
+                "department_id": department_id,
+                "user_id": user_id,
+                "extraction_metadata": extraction_metadata
+            }
+        )
+        
+        # Analyze document
+        result = await analyze_document_intelligence(document)
+        
+        # Convert to dict properly
+        if hasattr(result, 'dict'):
+            result_dict = result.dict()
+        elif isinstance(result, dict):
+            result_dict = result
+        else:
+            result_dict = {}
+        
+        # Add scanner-specific info to response
+        result_dict.update({
+            "scanner_info": {
+                "scanner_id": scanner_id,
+                "scan_settings": settings,
+                "scan_timestamp": datetime.utcnow().isoformat()
+            },
+            "source": "scanner",
+            "company_id": company_id,
+            "department_id": department_id,
+            "user_id": user_id
+        })
+        
+        logger.info(f"✅ Scanner document processed - Scanner: {scanner_id}")
+        
+        return result_dict
+        
+    except Exception as e:
+        logger.error(f"Scanner upload error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Scanner upload failed: {str(e)}")
 
 # Analytics endpoints
 @app.get("/analytics/stats")

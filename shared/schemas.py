@@ -44,6 +44,9 @@ class IcrJobResult(BaseModel):
     document_id: str
     job_id: str
     status: str
+    signed: bool = Field(default=False, description="Simple boolean: does document have valid signatures")
+    signature_count: int = Field(default=0, description="Number of signatures detected")
+    signature_confidence: Optional[float] = Field(None, description="Average confidence of all signatures")
     signatures: List[Dict[str, Any]] = Field(default_factory=list)
     handwriting: List[Dict[str, Any]] = Field(default_factory=list)
 
