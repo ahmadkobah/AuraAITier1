@@ -749,6 +749,11 @@ async def analyze_for_projectena(
         else:
             folder_paths = getattr(routing, 'folder_paths', {})
         
+        # Ensure folder_paths is a dict, not a list or other type
+        if not isinstance(folder_paths, dict):
+            logger.warning(f"folder_paths is not a dict: {type(folder_paths)} - {folder_paths}")
+            folder_paths = {}
+        
         # Generate safe filename
         import re
         safe_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', file.filename or "document")
@@ -813,8 +818,8 @@ async def analyze_for_projectena(
             "confidenceScore": confidence_score,
             "signed": signed,
             
-            # Suggested folder path
-            "suggestedPath": folder_paths.get("full_path", f"/{companyId}/{departmentId}/{document_type}") if folder_paths else f"/{companyId}/{departmentId}/{document_type}",
+            # Suggested folder path - ensure all components are strings
+            "suggestedPath": folder_paths.get("full_path", f"/{str(companyId)}/{str(departmentId)}/{str(document_type)}") if folder_paths else f"/{str(companyId)}/{str(departmentId)}/{str(document_type)}",
             
             # Status
             "status": "processed",
