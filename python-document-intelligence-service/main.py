@@ -621,6 +621,42 @@ async def analyze_uploaded_file(
             result.company_id = company_id
             result.department_id = department_id
             result.user_id = user_id
+            
+            # Add folder workflow if company_id and department_id are provided
+            if company_id and department_id:
+                routing = result.routing if hasattr(result, 'routing') else {}
+                if isinstance(routing, dict):
+                    folder_paths = routing.get("folder_paths", {})
+                else:
+                    folder_paths = getattr(routing, 'folder_paths', {})
+                
+                classification = result.classification if hasattr(result, 'classification') else {}
+                if isinstance(classification, dict):
+                    document_type = classification.get("document_type", "unknown")
+                else:
+                    document_type = getattr(classification, 'document_type', 'unknown')
+                
+                # Convert result to dict to add folderWorkflow
+                if hasattr(result, 'dict'):
+                    result_dict = result.dict()
+                elif isinstance(result, dict):
+                    result_dict = result
+                else:
+                    result_dict = {}
+                    
+                result_dict["folderWorkflow"] = {
+                    "createAfterProcessing": True,
+                    "finalPath": folder_paths.get("full_path", f"/{str(company_id)}/{str(department_id)}/{str(document_type)}") if folder_paths else f"/{str(company_id)}/{str(department_id)}/{str(document_type)}",
+                    "components": {
+                        "year": folder_paths.get("year", datetime.utcnow().strftime("%Y")) if folder_paths else datetime.utcnow().strftime("%Y"),
+                        "month": folder_paths.get("month", datetime.utcnow().strftime("%B")) if folder_paths else datetime.utcnow().strftime("%B"),
+                        "docType": str(document_type)
+                    },
+                    "shouldAutoCreate": True,
+                    "checkExistingFirst": True
+                }
+                return result_dict
+            
             return result
         elif analysis_type == "classification":
             result = await classify_document(ClassificationRequest(
@@ -821,12 +857,25 @@ async def analyze_for_projectena(
             # Suggested folder path - ensure all components are strings
             "suggestedPath": folder_paths.get("full_path", f"/{str(companyId)}/{str(departmentId)}/{str(document_type)}") if folder_paths else f"/{str(companyId)}/{str(departmentId)}/{str(document_type)}",
             
+            # Folder creation workflow (create AFTER processing completes)
+            "folderWorkflow": {
+                "createAfterProcessing": True,  # Don't create folder until processing is done
+                "finalPath": folder_paths.get("full_path", f"/{str(companyId)}/{str(departmentId)}/{str(document_type)}") if folder_paths else f"/{str(companyId)}/{str(departmentId)}/{str(document_type)}",
+                "components": {
+                    "year": folder_paths.get("year", datetime.utcnow().strftime("%Y")) if folder_paths else datetime.utcnow().strftime("%Y"),
+                    "month": folder_paths.get("month", datetime.utcnow().strftime("%B")) if folder_paths else datetime.utcnow().strftime("%B"),
+                    "docType": str(document_type)
+                },
+                "shouldAutoCreate": True,  # Auto-create if folder doesn't exist
+                "checkExistingFirst": True  # Check if folder already exists before creating
+            },
+            
             # Status
             "status": "processed",
             "processedAt": datetime.utcnow().isoformat()
         }
         
-        logger.info(f"✅ Projectena processing complete - Type: {document_type}, Signed: {signed}")
+        logger.info(f"✅ Projectena processing complete - Type: {document_type}, Path: {folder_paths.get('full_path', 'N/A') if folder_paths else 'N/A'}, Signed: {signed}")
         
         return projectena_response
         
@@ -930,6 +979,26 @@ async def receive_from_scanner(
             "department_id": department_id,
             "user_id": user_id
         })
+        
+        # Add folder workflow if company_id and department_id are provided
+        if company_id and department_id:
+            routing = result_dict.get("routing", {})
+            folder_paths = routing.get("folder_paths", {}) if isinstance(routing, dict) else {}
+            
+            classification = result_dict.get("classification", {})
+            document_type = classification.get("document_type", "unknown") if isinstance(classification, dict) else "unknown"
+            
+            result_dict["folderWorkflow"] = {
+                "createAfterProcessing": True,
+                "finalPath": folder_paths.get("full_path", f"/{str(company_id)}/{str(department_id)}/{str(document_type)}") if folder_paths else f"/{str(company_id)}/{str(department_id)}/{str(document_type)}",
+                "components": {
+                    "year": folder_paths.get("year", datetime.utcnow().strftime("%Y")) if folder_paths else datetime.utcnow().strftime("%Y"),
+                    "month": folder_paths.get("month", datetime.utcnow().strftime("%B")) if folder_paths else datetime.utcnow().strftime("%B"),
+                    "docType": str(document_type)
+                },
+                "shouldAutoCreate": True,
+                "checkExistingFirst": True
+            }
         
         logger.info(f"✅ Scanner document processed - Scanner: {scanner_id}")
         
