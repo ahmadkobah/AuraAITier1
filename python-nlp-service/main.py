@@ -79,6 +79,8 @@ try:
     from app.processing.text_processor import TextPreprocessor, PreprocessingConfig
     from app.models.base_nlp_model import NLPTaskType, LanguageCode, NLPResult
     from app.utils.config import get_config, setup_environment_config
+    from app.processing.markdown_parser import parse_markdown, StructuredDocument
+    from app.processing.structure_aware_extraction import extract_structured_entities
 except ImportError as e:  # pragma: no cover
     print(f"Warning: Some imports failed: {e}")
 
@@ -163,9 +165,9 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="SmartDockAI NLP Service",
-    description="Natural Language Processing service for text analysis, sentiment, entities, and more",
-    version="1.0.0"
+    title="SmartDockAI NLP Service - Enhanced with Structure Awareness",
+    description="Natural Language Processing service with markdown parsing and context-aware entity extraction. Optimized for DeepSeek OCR structured output.",
+    version="2.0.0"
 )
 
 # Add CORS middleware
@@ -647,12 +649,115 @@ async def analyze_text_endpoint(request: NLPAnalyzeRequest):
     response.update(analysis_payload["results"])
     return response
 
+
+@app.post("/nlp/analyze-structured")
+async def analyze_structured_text(request: NLPAnalyzeRequest):
+    """
+    Analyze markdown-formatted text with structure awareness.
+    
+    This endpoint parses markdown structure from DeepSeek OCR and uses
+    section/table context to improve entity recognition and classification.
+    
+    Returns enhanced entities with context information.
+    """
+    try:
+        text = validate_text_length(request.text)
+        
+        # Parse markdown structure
+        structured_doc = parse_markdown(text)
+        
+        # Run base NLP analysis
+        analysis_types = request.analysis_types or ["entities", "sentiment"]
+        analysis_payload = await _run_requested_analyses(
+            text=text,
+            analysis_types=analysis_types,
+            language_hint=request.language or request.options.get("language"),
+            options=request.options or {},
+        )
+        
+        # Extract base entities
+        base_entities = []
+        if "entities" in analysis_payload["results"]:
+            entities_data = analysis_payload["results"]["entities"]
+            if isinstance(entities_data, list):
+                base_entities = entities_data
+            elif isinstance(entities_data, dict) and "entities" in entities_data:
+                base_entities = entities_data["entities"]
+        
+        # Enhance with structure awareness
+        structured_entities = extract_structured_entities(structured_doc, base_entities)
+        
+        # Build response
+        language_str = language_code_to_str(analysis_payload["language"])
+        response = {
+            "language": language_str,
+            "text_length": len(text),
+            "timestamp": datetime.utcnow().isoformat(),
+            "structure": {
+                "sections": len(structured_doc.sections),
+                "tables": len(structured_doc.tables),
+                "headers": len(structured_doc.headers),
+                "has_tables": structured_doc.metadata.get("has_tables", False),
+                "document_title": structured_doc.metadata.get("document_title"),
+            },
+            "entities": [e.to_dict() for e in structured_entities],
+            "tables": [t.to_dict() for t in structured_doc.tables],
+            "confidence": analysis_payload["confidence"],
+            "analysis": analysis_payload["results"]
+        }
+        
+        # Add semantic extraction from tables
+        if structured_doc.tables:
+            response["table_data"] = _extract_semantic_table_data(structured_doc.tables)
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Structured analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Structured analysis failed: {e}")
+
+
+def _extract_semantic_table_data(tables: list) -> Dict[str, Any]:
+    """Extract semantic information from tables"""
+    table_data = {
+        "totals": [],
+        "line_items": [],
+        "key_values": {}
+    }
+    
+    for table in tables:
+        headers_lower = [h.lower() for h in table.headers]
+        
+        # Detect invoice line items table
+        if any(h in headers_lower for h in ["item", "description", "product"]):
+            for row in table.rows:
+                row_dict = dict(zip(table.headers, row))
+                table_data["line_items"].append(row_dict)
+        
+        # Extract totals
+        if any(h in headers_lower for h in ["total", "amount", "subtotal"]):
+            for idx, header in enumerate(table.headers):
+                if "total" in header.lower() or "amount" in header.lower():
+                    values = [row[idx] for row in table.rows if idx < len(row)]
+                    table_data["totals"].append({
+                        "field": header,
+                        "values": values
+                    })
+        
+        # Extract key-value pairs (2-column tables)
+        if len(table.headers) == 2:
+            for row in table.rows:
+                if len(row) >= 2:
+                    table_data["key_values"][row[0]] = row[1]
+    
+    return table_data
+
 @app.get("/")
 async def root():
     """Root endpoint with service information."""
     return {
         "service": "SmartDockAI NLP Service",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "status": "active",
         "capabilities": [
             "sentiment_analysis",
@@ -662,9 +767,19 @@ async def root():
             "language_detection",
             "text_classification",
             "semantic_similarity",
-            "batch_processing"
+            "batch_processing",
+            "structured_text_analysis",  # NEW
+            "markdown_parsing",  # NEW
+            "context_aware_ner",  # NEW
+            "table_extraction",  # NEW
         ],
-        "supported_languages": NLP_CONFIG["supported_languages"]
+        "supported_languages": NLP_CONFIG["supported_languages"],
+        "features": {
+            "structure_aware": True,
+            "markdown_support": True,
+            "table_parsing": True,
+            "context_based_entities": True,
+        }
     }
 
 @app.get("/health")

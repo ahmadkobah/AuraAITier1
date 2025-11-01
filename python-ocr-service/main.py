@@ -40,6 +40,9 @@ DEEPSEEK_PATH = ROOT / "DeepSeek-OCR-main" / "DeepSeek-OCR-master" / "DeepSeek-O
 if str(DEEPSEEK_PATH) not in sys.path:
     sys.path.append(str(DEEPSEEK_PATH))
 
+# Import routing components
+from app.routing import analyze_document_complexity, ComplexityScore
+
 try:
     from shared.schemas import FileReference, OcrJobRequest, OcrJobResult
 except ImportError:  # pragma: no cover - fallback definition
@@ -422,34 +425,80 @@ def resolve_source_file(source: FileReference) -> Tuple[Path, Optional[Path]]:
     return path, None
 
 
-# Initialize OCR engine based on configuration
-# Use lazy initialization to avoid issues with uvicorn reload
-engine = None
+# Initialize OCR engines (both for hybrid mode)
+trocr_engine = None
+deepseek_engine = None
 
-def get_engine():
-    """Get or initialize the OCR engine."""
-    global engine, USE_DEEPSEEK
-    if engine is None:
-        if USE_DEEPSEEK:
-            try:
-                print("🔧 Initializing DeepSeek OCR engine...")
-                engine = DeepSeekOCREngine()
-                print("✅ DeepSeek OCR engine initialized")
-            except Exception as e:
-                print(f"⚠️  Failed to initialize DeepSeek OCR: {e}")
-                print("   Falling back to TrOCR...")
-                engine = TrOCREngine()
-                USE_DEEPSEEK = False
+def get_trocr_engine():
+    """Get or initialize TrOCR engine."""
+    global trocr_engine
+    if trocr_engine is None:
+        print("🔧 Initializing TrOCR engine...")
+        trocr_engine = TrOCREngine()
+        print("✅ TrOCR engine initialized")
+    return trocr_engine
+
+def get_deepseek_engine():
+    """Get or initialize DeepSeek engine."""
+    global deepseek_engine
+    if deepseek_engine is None:
+        if not CUDA_AVAILABLE:
+            raise RuntimeError("DeepSeek requires CUDA GPU")
+        print("🔧 Initializing DeepSeek OCR engine...")
+        deepseek_engine = DeepSeekOCREngine()
+        print("✅ DeepSeek OCR engine initialized")
+    return deepseek_engine
+
+def get_engine(image_path: Optional[Path] = None, force_engine: Optional[str] = None):
+    """
+    Get appropriate OCR engine based on document complexity or forced selection.
+    
+    Args:
+        image_path: Path to image for complexity analysis (if None, uses default)
+        force_engine: Force specific engine ('trocr' or 'deepseek')
+        
+    Returns:
+        Tuple of (engine, engine_name, complexity_info)
+    """
+    # If force_engine specified, use it
+    if force_engine == "trocr":
+        return get_trocr_engine(), "TrOCR", {"forced": True, "reason": "User requested"}
+    elif force_engine == "deepseek":
+        if not CUDA_AVAILABLE:
+            print("⚠️  DeepSeek requested but GPU not available, falling back to TrOCR")
+            return get_trocr_engine(), "TrOCR", {"forced": True, "reason": "GPU not available"}
+        return get_deepseek_engine(), "DeepSeek", {"forced": True, "reason": "User requested"}
+    
+    # If no image path or DeepSeek not enabled, use default
+    if image_path is None or not USE_DEEPSEEK or not CUDA_AVAILABLE:
+        return get_trocr_engine(), "TrOCR", {"reason": "Default engine"}
+    
+    # Analyze document complexity
+    try:
+        complexity = analyze_document_complexity(image_path)
+        complexity_info = complexity.to_dict()
+        
+        print(f"� Document complexity: {complexity.score:.2f} "
+              f"(tables={complexity.has_tables}, multi-col={complexity.has_multi_column})")
+        print(f"   Recommended: {complexity.recommended_engine.upper()}")
+        
+        if complexity.recommended_engine == "deepseek":
+            engine = get_deepseek_engine()
+            return engine, "DeepSeek", complexity_info
         else:
-            print("🔧 Initializing TrOCR engine...")
-            engine = TrOCREngine()
-            print("✅ TrOCR engine initialized")
-    return engine
+            engine = get_trocr_engine()
+            return engine, "TrOCR", complexity_info
+            
+    except Exception as e:
+        print(f"⚠️  Complexity analysis failed: {e}")
+        print("   Falling back to TrOCR")
+        return get_trocr_engine(), "TrOCR", {"reason": "Analysis failed", "error": str(e)}
+
 
 app = FastAPI(
-    title="OCR Service - Document Text Extraction",
-    description=f"Production OCR service using {'DeepSeek-VL OCR' if USE_DEEPSEEK else 'Microsoft TrOCR'}",
-    version="2.0.0"
+    title="OCR Service - Hybrid Intelligent Document Processing",
+    description=f"Production OCR service with intelligent routing: TrOCR for simple documents, DeepSeek for complex layouts",
+    version="3.0.0"
 )
 
 app.add_middleware(
@@ -461,37 +510,26 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize the OCR engine on startup."""
+    """Initialize the OCR service with hybrid routing."""
     print("\n" + "=" * 70)
-    print("🚀 OCR SERVICE STARTUP")
+    print("🚀 HYBRID OCR SERVICE STARTUP")
     print("=" * 70)
-    print(f"Engine Mode: {FINAL_ENGINE}")
+    print(f"Mode: Intelligent Routing (Complexity-Based)")
     print(f"Device: {DEVICE.type.upper()}")
     print(f"GPU Available: {CUDA_AVAILABLE}")
-    if USE_DEEPSEEK:
-        print(f"Model Path: {DEEPSEEK_MODEL_PATH}")
-        print("\n⏳ Note: First request will trigger model download (~7GB, 5-10 min)")
+    print(f"\nEngines:")
+    print(f"  • TrOCR: Simple documents (single-column text)")
+    print(f"           Model: {TROCR_MODEL_NAME}")
+    if USE_DEEPSEEK and CUDA_AVAILABLE:
+        print(f"  • DeepSeek: Complex documents (tables, multi-column)")
+        print(f"              Model: {DEEPSEEK_MODEL_PATH}")
+        print(f"\n⏳ Note: DeepSeek will download on first complex document (~7GB, 5-10 min)")
     else:
-        print(f"Model: {TROCR_MODEL_NAME}")
+        print(f"  • DeepSeek: DISABLED (requires CUDA GPU)")
+    print(f"\nRouting Strategy:")
+    print(f"  Documents are analyzed for complexity and routed to the")
+    print(f"  most appropriate engine for optimal speed and accuracy.")
     print("=" * 70 + "\n")
-    
-    # Write configuration to file for debugging
-    config_file = OUTPUT_DIR / "last_startup_config.txt"
-    with open(config_file, "w") as f:
-        f.write("OCR SERVICE CONFIGURATION\n")
-        f.write("=" * 70 + "\n")
-        f.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Python: {sys.executable}\n")
-        f.write(f"PyTorch: {torch.__version__}\n")
-        f.write(f"CUDA Available: {CUDA_AVAILABLE}\n")
-        if CUDA_AVAILABLE:
-            f.write(f"CUDA Version: {torch.version.cuda}\n")
-            f.write(f"GPU: {torch.cuda.get_device_name(0)}\n")
-        f.write(f"\nEngine: {FINAL_ENGINE}\n")
-        f.write(f"USE_DEEPSEEK: {USE_DEEPSEEK}\n")
-        f.write(f"Device: {DEVICE.type}\n")
-        f.write(f"Model: {DEEPSEEK_MODEL_PATH if USE_DEEPSEEK else TROCR_MODEL_NAME}\n")
-        f.write("=" * 70 + "\n")
 
 # In-memory job storage (use Redis/database for production)
 jobs: Dict[str, OcrJobResult] = {}
@@ -500,16 +538,18 @@ jobs: Dict[str, OcrJobResult] = {}
 @app.post("/ocr/process")
 async def ocr_process(file: UploadFile = File(...), prompt: Optional[str] = None):
     """
-    Process a single file for OCR.
+    Process a single file for OCR with intelligent routing.
     
-    This is the primary endpoint for quick OCR processing without job tracking.
+    Automatically analyzes document complexity and routes to:
+    - TrOCR: Simple documents (single column, plain text)
+    - DeepSeek: Complex documents (tables, multi-column layouts)
     
     Args:
         file: Uploaded image or PDF file
         prompt: Optional prompt for the model
         
     Returns:
-        OCR result with extracted text, confidence score, and metadata
+        OCR result with extracted text, confidence score, routing info, and metadata
         
     Raises:
         HTTPException: If file type is not supported
@@ -519,18 +559,23 @@ async def ocr_process(file: UploadFile = File(...), prompt: Optional[str] = None
     
     tmp_path = save_upload_to_temp(file)
     try:
-        ocr_engine = get_engine()
+        # Get appropriate engine based on document complexity
+        ocr_engine, engine_name, complexity_info = get_engine(tmp_path)
+        
         result = await ocr_engine.run_inference(tmp_path, prompt=prompt)
         metadata = {
             "prompt": result["prompt"],
             "output_dir": str(result["output_dir"]),
             "artifacts": [str(a) for a in result["artifacts"]],
+            "engine_used": engine_name,
+            "routing_decision": complexity_info,
         }
         return {
             "text": result["text"],
-            "confidence": 0.92,  # TrOCR typical confidence
+            "confidence": 0.92,  # Will be more accurate with actual model outputs
             "metadata": metadata,
             "processing_time": result["duration"],
+            "engine": engine_name,
         }
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -538,7 +583,7 @@ async def ocr_process(file: UploadFile = File(...), prompt: Optional[str] = None
 
 async def _run_job(job_id: str, payload: OcrJobRequest):
     """
-    Background task to process an OCR job.
+    Background task to process an OCR job with intelligent routing.
     
     Args:
         job_id: Unique identifier for this job
@@ -547,7 +592,10 @@ async def _run_job(job_id: str, payload: OcrJobRequest):
     cleanup_dir: Optional[Path] = None
     try:
         source_path, cleanup_dir = resolve_source_file(payload.source_file)
-        ocr_engine = get_engine()
+        
+        # Get appropriate engine based on document complexity
+        ocr_engine, engine_name, complexity_info = get_engine(source_path)
+        
         result = await ocr_engine.run_inference(source_path, prompt=payload.prompt)
         processed_assets = [payload.source_file]
         for artifact in result["artifacts"]:
@@ -562,6 +610,8 @@ async def _run_job(job_id: str, payload: OcrJobRequest):
             metadata={
                 "prompt": result["prompt"],
                 "output_dir": str(result["output_dir"]),
+                "engine_used": engine_name,
+                "routing_decision": complexity_info,
             },
             confidence=0.92,
             processed_assets=processed_assets,
@@ -634,29 +684,36 @@ async def health_check():
     Health check endpoint.
     
     Returns:
-        Service health status, model information, and GPU availability
+        Service health status, available engines, and GPU availability
     """
+    engines_available = ["TrOCR"]
+    if USE_DEEPSEEK and CUDA_AVAILABLE:
+        engines_available.append("DeepSeek")
+    
     return {
         "status": "ok",
-        "model": DEEPSEEK_MODEL_PATH if USE_DEEPSEEK else TROCR_MODEL_NAME,
-        "engine": "DeepSeek-VL-OCR" if USE_DEEPSEEK else "TrOCR",
+        "mode": "hybrid_routing",
+        "engines_available": engines_available,
+        "trocr_model": TROCR_MODEL_NAME,
+        "deepseek_model": DEEPSEEK_MODEL_PATH if USE_DEEPSEEK else None,
         "device": DEVICE.type,
         "using_gpu": DEVICE.type == "cuda",
+        "routing_enabled": True,
     }
 
 
 if __name__ == "__main__":
     import uvicorn
     
-    print("\n" + "=" * 70)
-    print("🚀 STARTING UVICORN SERVER")
-    print("=" * 70)
-    print(f"Host: 127.0.0.1")
-    print(f"Port: 8000")
-    print(f"URL: http://127.0.0.1:8000")
-    print(f"\n💡 Keep this terminal window open!")
-    print(f"   Press CTRL+C to stop the service")
-    print("=" * 70 + "\n")
+    print(f"🚀 Starting Hybrid OCR Service")
+    print(f"   Routing: TrOCR (simple) ⟷ DeepSeek (complex)")
+    print(f"   Device: {DEVICE.type}")
+    print(f"   GPU Available: {torch.cuda.is_available()}")
+    print(f"   Binding to: 127.0.0.1:8000")
+    print()
+    print("💡 TIP: Keep this terminal window open!")
+    print("   Press CTRL+C to stop the service.")
+    print()
     
     try:
         uvicorn.run(
@@ -667,14 +724,8 @@ if __name__ == "__main__":
             access_log=True
         )
     except KeyboardInterrupt:
-        print("\n" + "=" * 70)
-        print("⛔ OCR SERVICE STOPPED BY USER")
-        print("=" * 70)
+        print("\n⛔ Service stopped by user")
     except Exception as e:
-        print("\n" + "=" * 70)
-        print(f"❌ ERROR STARTING SERVICE")
-        print("=" * 70)
-        print(f"Error: {e}")
+        print(f"\n❌ Error: {e}")
         import traceback
         traceback.print_exc()
-        print("=" * 70)

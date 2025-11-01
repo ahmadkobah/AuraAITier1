@@ -43,6 +43,7 @@ import traceback
 # Local imports
 from app.models.trocr_model import TrOCRHandwritingModel
 from app.preprocessing.handwriting_processor import HandwritingPreprocessor
+from app.preprocessing.mixed_document_detector import MixedDocumentDetector, detect_mixed_document
 from app.training.training_data_collector import TrainingDataCollector
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,9 +78,9 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="SmartDockAI ICR Service",
-    description="Intelligent Character Recognition service for handwriting, signatures, and forms",
-    version="1.0.0"
+    title="SmartDockAI ICR Service - Hybrid OCR/ICR Processing",
+    description="Intelligent Character Recognition with mixed document support. Handles handwriting, signatures, and hybrid printed/handwritten documents.",
+    version="2.0.0"
 )
 
 # Add CORS middleware
@@ -430,10 +431,19 @@ async def health_check():
         
         return {
             "status": "healthy",
+            "version": "2.0.0",
             "timestamp": datetime.utcnow().isoformat(),
             "services": {
                 "icr_model": "ready" if model else "unavailable",
-                "preprocessor": "ready" if preprocessor else "unavailable"
+                "preprocessor": "ready" if preprocessor else "unavailable",
+                "mixed_document_detector": "ready"
+            },
+            "capabilities": {
+                "handwriting_recognition": True,
+                "signature_detection": True,
+                "mixed_document_support": True,
+                "hybrid_ocr_icr": True,
+                "training_data_collection": True
             }
         }
     except Exception as e:
@@ -647,6 +657,250 @@ async def recognize_handwriting(
 
 
 @app.post("/preprocess")
+async def preprocess_image(
+    file: UploadFile = File(...),
+    preprocessing_type: str = "line_recognition",
+    preprocessor: HandwritingPreprocessor = Depends(get_preprocessor)
+):
+    """
+    Preprocess handwriting image.
+    
+    Args:
+        file: Image file
+        preprocessing_type: Type of preprocessing (line_recognition, word_recognition, etc.)
+    """
+    if not validate_image_file(file):
+        raise HTTPException(status_code=400, detail="Invalid image format")
+    
+    try:
+        image = await load_image_from_upload(file)
+        results = await preprocessor.preprocess_handwriting(image, preprocessing_type)
+        
+        # Convert numpy arrays to base64 for JSON serialization
+        import base64
+        
+        response = {
+            "preprocessing_type": preprocessing_type,
+            "metadata": results["metadata"],
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Add preprocessed image as base64
+        _, buffer = cv2.imencode('.png', results["preprocessed_image"])
+        response["preprocessed_image_base64"] = base64.b64encode(buffer).decode('utf-8')
+        
+        # Add segments if present
+        if "line_segments" in results:
+            response["line_segments"] = [
+                {
+                    "bbox": seg.bbox,
+                    "metadata": seg.metadata
+                }
+                for seg in results["line_segments"]
+            ]
+        
+        if "word_segments" in results:
+            response["word_segments"] = [
+                {
+                    "bbox": seg.bbox,
+                    "metadata": seg.metadata
+                }
+                for seg in results["word_segments"]
+            ]
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Preprocessing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Preprocessing failed: {e}")
+
+
+@app.post("/hybrid/analyze")
+async def analyze_mixed_document(file: UploadFile = File(...)):
+    """
+    Analyze document for mixed printed/handwritten content.
+    
+    Detects regions of printed text (for OCR) and handwritten text (for ICR).
+    Returns analysis with region types and processing strategy.
+    
+    Use this endpoint to determine if a document should use:
+    - OCR only (all printed)
+    - ICR only (all handwritten)
+    - Hybrid processing (mixed content)
+    """
+    if not validate_image_file(file):
+        raise HTTPException(status_code=400, detail="Invalid image format")
+    
+    try:
+        image = await load_image_from_upload(file)
+        
+        # Detect mixed content
+        detector = MixedDocumentDetector()
+        analysis = detector.analyze(image)
+        
+        return {
+            "analysis": analysis.to_dict(),
+            "recommendation": {
+                "strategy": analysis.processing_strategy,
+                "use_ocr": analysis.processing_strategy in ["ocr_only", "hybrid"],
+                "use_icr": analysis.processing_strategy in ["icr_only", "hybrid"],
+                "is_mixed": analysis.is_mixed,
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Mixed document analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")
+
+
+@app.post("/hybrid/process")
+async def process_mixed_document_endpoint(
+    file: UploadFile = File(...),
+    ocr_service_url: str = "http://127.0.0.1:8000",
+    model: TrOCRHandwritingModel = Depends(get_icr_model)
+):
+    """
+    Process mixed documents with both OCR and ICR.
+    
+    Automatically detects printed and handwritten regions, routes each region
+    to the appropriate service (OCR for printed, ICR for handwritten), and
+    combines the results.
+    
+    Args:
+        file: Document image file
+        ocr_service_url: URL of OCR service (default: localhost:8000)
+        
+    Returns:
+        Combined text extraction results with region information
+    """
+    if not validate_image_file(file):
+        raise HTTPException(status_code=400, detail="Invalid image format")
+    
+    try:
+        image = await load_image_from_upload(file)
+        
+        # Detect mixed content
+        detector = MixedDocumentDetector()
+        analysis = detector.analyze(image)
+        
+        results = {
+            "analysis": analysis.to_dict(),
+            "regions": [],
+            "combined_text": "",
+            "processing_time": 0.0
+        }
+        
+        start_time = datetime.utcnow()
+        
+        # Process based on strategy
+        if analysis.processing_strategy == "ocr_only":
+            # Send to OCR service
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    # Convert image to bytes
+                    _, buffer = cv2.imencode('.png', image)
+                    files = {'file': ('document.png', buffer.tobytes(), 'image/png')}
+                    
+                    response = await client.post(
+                        f"{ocr_service_url}/ocr/process",
+                        files=files
+                    )
+                    
+                    if response.status_code == 200:
+                        ocr_result = response.json()
+                        results["combined_text"] = ocr_result.get("text", "")
+                        results["regions"].append({
+                            "type": "printed",
+                            "text": ocr_result.get("text", ""),
+                            "confidence": ocr_result.get("confidence", 0.0),
+                            "engine": ocr_result.get("engine", "OCR")
+                        })
+            except Exception as e:
+                logger.error(f"OCR service call failed: {e}")
+                results["error"] = f"OCR processing failed: {str(e)}"
+        
+        elif analysis.processing_strategy == "icr_only":
+            # Process with ICR
+            recognition_result = await model.predict(image)
+            results["combined_text"] = recognition_result.text
+            results["regions"].append({
+                "type": "handwritten",
+                "text": recognition_result.text,
+                "confidence": recognition_result.confidence,
+                "engine": "ICR"
+            })
+        
+        elif analysis.processing_strategy == "hybrid":
+            # Process each region type separately
+            combined_text_parts = []
+            
+            # Process printed regions with OCR
+            if analysis.printed_regions:
+                try:
+                    # For now, send whole image (in production, send regions individually)
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        _, buffer = cv2.imencode('.png', image)
+                        files = {'file': ('document.png', buffer.tobytes(), 'image/png')}
+                        
+                        response = await client.post(
+                            f"{ocr_service_url}/ocr/process",
+                            files=files
+                        )
+                        
+                        if response.status_code == 200:
+                            ocr_result = response.json()
+                            ocr_text = ocr_result.get("text", "")
+                            combined_text_parts.append(ocr_text)
+                            results["regions"].append({
+                                "type": "printed",
+                                "text": ocr_text,
+                                "confidence": ocr_result.get("confidence", 0.0),
+                                "engine": ocr_result.get("engine", "OCR"),
+                                "region_count": len(analysis.printed_regions)
+                            })
+                except Exception as e:
+                    logger.error(f"OCR service call failed: {e}")
+            
+            # Process handwritten regions with ICR
+            for region in analysis.handwritten_regions:
+                if region.image_crop is not None:
+                    recognition_result = await model.predict(region.image_crop)
+                    combined_text_parts.append(recognition_result.text)
+                    results["regions"].append({
+                        "type": "handwritten",
+                        "text": recognition_result.text,
+                        "confidence": recognition_result.confidence,
+                        "bbox": region.bbox,
+                        "engine": "ICR"
+                    })
+            
+            # Process signatures
+            for region in analysis.signature_regions:
+                results["regions"].append({
+                    "type": "signature",
+                    "text": "[SIGNATURE DETECTED]",
+                    "confidence": region.confidence,
+                    "bbox": region.bbox,
+                    "engine": "ICR"
+                })
+                combined_text_parts.append("[SIGNATURE]")
+            
+            results["combined_text"] = "\n".join(combined_text_parts)
+        
+        # Calculate processing time
+        end_time = datetime.utcnow()
+        results["processing_time"] = (end_time - start_time).total_seconds()
+        results["timestamp"] = end_time.isoformat()
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Hybrid processing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Hybrid processing failed: {e}")
+
+
+@app.post("/preprocess_old")
 async def preprocess_image(
     file: UploadFile = File(...),
     task_type: str = "line_recognition",
