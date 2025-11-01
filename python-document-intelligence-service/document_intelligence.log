@@ -352,3 +352,459 @@ classification.sub_categories.2
 2025-10-31 14:55:46,910 - app.routing.document_router - INFO - Document routing completed in 0.00 seconds
 2025-10-31 14:55:46,910 - app.routing.document_router - INFO - Priority: medium, Destinations: 1
 2025-10-31 14:55:46,911 - main - INFO - Completed intelligence analysis in 0.10 seconds
+2025-11-01 16:41:32,960 - main - INFO - Starting Document Intelligence Service...
+2025-11-01 16:41:32,962 - app.classification.document_classifier - INFO - Initializing Document Classifier...
+2025-11-01 16:41:32,962 - app.models.classification_model - INFO - Initializing Document Classification Model...
+2025-11-01 16:41:32,963 - app.models.classification_model - WARNING - spaCy model not found, using basic processing
+2025-11-01 16:41:32,963 - app.models.classification_model - INFO - No pre-trained models found, will use rule-based classification
+2025-11-01 16:41:34,136 - app.models.classification_model - INFO - Transformer model initialized
+2025-11-01 16:41:34,137 - app.models.classification_model - INFO - Document Classification Model initialized successfully
+2025-11-01 16:41:34,137 - app.classification.document_classifier - INFO - Document Classifier initialized successfully
+2025-11-01 16:41:34,137 - app.extraction.entity_extractor - INFO - Initializing Entity Extractor...
+2025-11-01 16:41:34,137 - app.models.extraction_model - INFO - Initializing Entity Extraction Model...
+2025-11-01 16:41:34,138 - app.models.extraction_model - WARNING - spaCy model not found, using basic NER
+2025-11-01 16:41:34,827 - app.models.extraction_model - INFO - Transformer NER pipeline initialized
+2025-11-01 16:41:34,827 - app.models.extraction_model - INFO - Entity Extraction Model initialized successfully
+2025-11-01 16:41:34,828 - app.extraction.entity_extractor - INFO - Entity Extractor initialized successfully
+2025-11-01 16:41:34,828 - app.templates.template_manager - INFO - Initializing Template Manager...
+2025-11-01 16:41:34,828 - app.models.template_model - INFO - Initializing Template Matching Model...
+2025-11-01 16:41:34,834 - app.models.template_model - INFO - Loaded 4 templates from disk
+2025-11-01 16:41:34,834 - app.models.template_model - INFO - Template Matching Model initialized with 4 templates
+2025-11-01 16:41:34,834 - app.templates.template_manager - INFO - Template Manager initialized successfully
+2025-11-01 16:41:34,834 - app.validation.document_validator - INFO - Initializing Document Validator...
+2025-11-01 16:41:34,834 - app.validation.document_validator - INFO - Custom validation rules loaded
+2025-11-01 16:41:34,835 - app.validation.document_validator - INFO - Document Validator initialized successfully
+2025-11-01 16:41:34,835 - app.routing.document_router - INFO - Initializing Document Router...
+2025-11-01 16:41:34,835 - app.routing.document_router - INFO - Custom routing configurations loaded
+2025-11-01 16:41:34,835 - app.routing.document_router - INFO - Document Router initialized successfully
+2025-11-01 16:41:34,835 - main - INFO - Document Intelligence Service started successfully!
+2025-11-01 16:50:24,549 - main - INFO - Starting Document Intelligence Service...
+2025-11-01 16:50:24,552 - app.classification.document_classifier - INFO - Initializing Document Classifier...
+2025-11-01 16:50:24,552 - app.models.classification_model - INFO - Initializing Document Classification Model...
+2025-11-01 16:50:24,554 - app.models.classification_model - WARNING - spaCy model not found, using basic processing
+2025-11-01 16:50:24,554 - app.models.classification_model - INFO - No pre-trained models found, will use rule-based classification
+2025-11-01 16:50:25,651 - app.models.classification_model - INFO - Transformer model initialized
+2025-11-01 16:50:25,652 - app.models.classification_model - INFO - Document Classification Model initialized successfully
+2025-11-01 16:50:25,652 - app.classification.document_classifier - INFO - Document Classifier initialized successfully
+2025-11-01 16:50:25,652 - app.extraction.entity_extractor - INFO - Initializing Entity Extractor...
+2025-11-01 16:50:25,652 - app.models.extraction_model - INFO - Initializing Entity Extraction Model...
+2025-11-01 16:50:25,653 - app.models.extraction_model - WARNING - spaCy model not found, using basic NER
+2025-11-01 16:50:26,465 - app.models.extraction_model - INFO - Transformer NER pipeline initialized
+2025-11-01 16:50:26,466 - app.models.extraction_model - INFO - Entity Extraction Model initialized successfully
+2025-11-01 16:50:26,466 - app.extraction.entity_extractor - INFO - Entity Extractor initialized successfully
+2025-11-01 16:50:26,466 - app.templates.template_manager - INFO - Initializing Template Manager...
+2025-11-01 16:50:26,466 - app.models.template_model - INFO - Initializing Template Matching Model...
+2025-11-01 16:50:26,468 - app.models.template_model - INFO - Loaded 4 templates from disk
+2025-11-01 16:50:26,468 - app.models.template_model - INFO - Template Matching Model initialized with 4 templates
+2025-11-01 16:50:26,468 - app.templates.template_manager - INFO - Template Manager initialized successfully
+2025-11-01 16:50:26,468 - app.validation.document_validator - INFO - Initializing Document Validator...
+2025-11-01 16:50:26,469 - app.validation.document_validator - INFO - Custom validation rules loaded
+2025-11-01 16:50:26,469 - app.validation.document_validator - INFO - Document Validator initialized successfully
+2025-11-01 16:50:26,469 - app.routing.document_router - INFO - Initializing Document Router...
+2025-11-01 16:50:26,469 - app.routing.document_router - INFO - Custom routing configurations loaded
+2025-11-01 16:50:26,469 - app.routing.document_router - INFO - Document Router initialized successfully
+2025-11-01 16:50:26,469 - main - INFO - Document Intelligence Service started successfully!
+2025-11-01 16:55:39,192 - main - INFO - Starting Document Intelligence Service...
+2025-11-01 16:55:39,193 - app.classification.document_classifier - INFO - Initializing Document Classifier...
+2025-11-01 16:55:39,193 - app.models.classification_model - INFO - Initializing Document Classification Model...
+2025-11-01 16:55:39,194 - app.models.classification_model - WARNING - spaCy model not found, using basic processing
+2025-11-01 16:55:39,195 - app.models.classification_model - INFO - No pre-trained models found, will use rule-based classification
+2025-11-01 16:55:40,312 - app.models.classification_model - INFO - Transformer model initialized
+2025-11-01 16:55:40,312 - app.models.classification_model - INFO - Document Classification Model initialized successfully
+2025-11-01 16:55:40,312 - app.classification.document_classifier - INFO - Document Classifier initialized successfully
+2025-11-01 16:55:40,313 - app.extraction.entity_extractor - INFO - Initializing Entity Extractor...
+2025-11-01 16:55:40,313 - app.models.extraction_model - INFO - Initializing Entity Extraction Model...
+2025-11-01 16:55:40,313 - app.models.extraction_model - WARNING - spaCy model not found, using basic NER
+2025-11-01 16:55:41,108 - app.models.extraction_model - INFO - Transformer NER pipeline initialized
+2025-11-01 16:55:41,109 - app.models.extraction_model - INFO - Entity Extraction Model initialized successfully
+2025-11-01 16:55:41,110 - app.extraction.entity_extractor - INFO - Entity Extractor initialized successfully
+2025-11-01 16:55:41,110 - app.templates.template_manager - INFO - Initializing Template Manager...
+2025-11-01 16:55:41,110 - app.models.template_model - INFO - Initializing Template Matching Model...
+2025-11-01 16:55:41,111 - app.models.template_model - INFO - Loaded 4 templates from disk
+2025-11-01 16:55:41,111 - app.models.template_model - INFO - Template Matching Model initialized with 4 templates
+2025-11-01 16:55:41,111 - app.templates.template_manager - INFO - Template Manager initialized successfully
+2025-11-01 16:55:41,112 - app.validation.document_validator - INFO - Initializing Document Validator...
+2025-11-01 16:55:41,112 - app.validation.document_validator - INFO - Custom validation rules loaded
+2025-11-01 16:55:41,112 - app.validation.document_validator - INFO - Document Validator initialized successfully
+2025-11-01 16:55:41,112 - app.routing.document_router - INFO - Initializing Document Router...
+2025-11-01 16:55:41,112 - app.routing.document_router - INFO - Custom routing configurations loaded
+2025-11-01 16:55:41,112 - app.routing.document_router - INFO - Document Router initialized successfully
+2025-11-01 16:55:41,113 - main - INFO - Document Intelligence Service started successfully!
+2025-11-01 16:59:17,916 - main - INFO - Starting Document Intelligence Service...
+2025-11-01 16:59:17,918 - app.classification.document_classifier - INFO - Initializing Document Classifier...
+2025-11-01 16:59:17,918 - app.models.classification_model - INFO - Initializing Document Classification Model...
+2025-11-01 16:59:17,919 - app.models.classification_model - WARNING - spaCy model not found, using basic processing
+2025-11-01 16:59:17,920 - app.models.classification_model - INFO - No pre-trained models found, will use rule-based classification
+2025-11-01 16:59:19,072 - app.models.classification_model - INFO - Transformer model initialized
+2025-11-01 16:59:19,072 - app.models.classification_model - INFO - Document Classification Model initialized successfully
+2025-11-01 16:59:19,072 - app.classification.document_classifier - INFO - Document Classifier initialized successfully
+2025-11-01 16:59:19,072 - app.extraction.entity_extractor - INFO - Initializing Entity Extractor...
+2025-11-01 16:59:19,073 - app.models.extraction_model - INFO - Initializing Entity Extraction Model...
+2025-11-01 16:59:19,073 - app.models.extraction_model - WARNING - spaCy model not found, using basic NER
+2025-11-01 16:59:19,613 - app.models.extraction_model - INFO - Transformer NER pipeline initialized
+2025-11-01 16:59:19,613 - app.models.extraction_model - INFO - Entity Extraction Model initialized successfully
+2025-11-01 16:59:19,613 - app.extraction.entity_extractor - INFO - Entity Extractor initialized successfully
+2025-11-01 16:59:19,614 - app.templates.template_manager - INFO - Initializing Template Manager...
+2025-11-01 16:59:19,614 - app.models.template_model - INFO - Initializing Template Matching Model...
+2025-11-01 16:59:19,615 - app.models.template_model - INFO - Loaded 4 templates from disk
+2025-11-01 16:59:19,615 - app.models.template_model - INFO - Template Matching Model initialized with 4 templates
+2025-11-01 16:59:19,615 - app.templates.template_manager - INFO - Template Manager initialized successfully
+2025-11-01 16:59:19,615 - app.validation.document_validator - INFO - Initializing Document Validator...
+2025-11-01 16:59:19,615 - app.validation.document_validator - INFO - Custom validation rules loaded
+2025-11-01 16:59:19,615 - app.validation.document_validator - INFO - Document Validator initialized successfully
+2025-11-01 16:59:19,615 - app.routing.document_router - INFO - Initializing Document Router...
+2025-11-01 16:59:19,616 - app.routing.document_router - INFO - Custom routing configurations loaded
+2025-11-01 16:59:19,616 - app.routing.document_router - INFO - Document Router initialized successfully
+2025-11-01 16:59:19,616 - main - INFO - Document Intelligence Service started successfully!
+2025-11-01 17:07:18,102 - main - INFO - Projectena upload - File: 01- Introduction to Cryptography.pdf, Company: 68fc1a3ce3282f65bea73032, Dept: 68fd2c17caace48c410fee72
+2025-11-01 17:07:26,116 - httpx - INFO - HTTP Request: POST http://localhost:8000/ocr/process "HTTP/1.1 500 Internal Server Error"
+2025-11-01 17:07:26,177 - main - ERROR - OCR service error: 500 - Internal Server Error
+2025-11-01 17:07:26,178 - main - INFO - Starting comprehensive analysis for document: 01- Introduction to Cryptography.pdf
+2025-11-01 17:07:26,181 - app.models.classification_model - WARNING - Text preprocessing error: 
+**********************************************************************
+  Resource [93mpunkt_tab[0m not found.
+  Please use the NLTK Downloader to obtain the resource:
+
+  [31m>>> import nltk
+  >>> nltk.download('punkt_tab')
+  [0m
+  For more information see: https://www.nltk.org/data.html
+
+  Attempted to load [93mtokenizers/punkt_tab/english/[0m
+
+  Searched in:
+    - 'C:\\Users\\Ahmad/nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\share\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\lib\\nltk_data'
+    - 'C:\\Users\\Ahmad\\AppData\\Roaming\\nltk_data'
+    - 'C:\\nltk_data'
+    - 'D:\\nltk_data'
+    - 'E:\\nltk_data'
+**********************************************************************
+
+2025-11-01 17:07:26,502 - app.models.classification_model - ERROR - Transformer classification error: list indices must be integers or slices, not str
+2025-11-01 17:07:26,502 - app.models.classification_model - INFO - Document classified as invoice with confidence 0.000
+2025-11-01 17:07:26,502 - app.models.extraction_model - INFO - Starting entity extraction...
+2025-11-01 17:07:28,205 - app.models.extraction_model - INFO - Entity extraction completed in 1.70 seconds
+2025-11-01 17:07:28,205 - app.models.extraction_model - INFO - Extracted 0 entities
+2025-11-01 17:07:28,206 - app.models.template_model - INFO - Starting template matching...
+2025-11-01 17:07:28,208 - app.models.template_model - INFO - Template matching completed in 0.00 seconds
+2025-11-01 17:07:28,208 - app.models.template_model - INFO - Found 0 matching templates
+2025-11-01 17:07:28,209 - app.validation.document_validator - INFO - Starting document validation for type: invoice
+2025-11-01 17:07:28,210 - app.validation.document_validator - INFO - Document validation completed in 0.00 seconds
+2025-11-01 17:07:28,211 - app.validation.document_validator - INFO - Validation result: FAILED
+2025-11-01 17:07:28,211 - app.routing.document_router - INFO - Starting document routing analysis...
+2025-11-01 17:07:28,212 - app.routing.document_router - INFO - Document routing completed in 0.00 seconds
+2025-11-01 17:07:28,212 - app.routing.document_router - INFO - Priority: medium, Destinations: 1
+2025-11-01 17:07:28,213 - main - INFO - Completed intelligence analysis in 2.03 seconds
+2025-11-01 17:07:28,213 - main - ERROR - Projectena upload error: can only concatenate str (not "list") to str
+2025-11-01 17:07:59,296 - main - INFO - Projectena upload - File: 01- Introduction to Cryptography.pdf, Company: 68fc1a3ce3282f65bea73032, Dept: 68fd2c17caace48c410fee72
+2025-11-01 17:07:59,823 - httpx - INFO - HTTP Request: POST http://localhost:8000/ocr/process "HTTP/1.1 500 Internal Server Error"
+2025-11-01 17:07:59,827 - main - ERROR - OCR service error: 500 - Internal Server Error
+2025-11-01 17:07:59,827 - main - INFO - Starting comprehensive analysis for document: 01- Introduction to Cryptography.pdf
+2025-11-01 17:07:59,830 - app.models.classification_model - WARNING - Text preprocessing error: 
+**********************************************************************
+  Resource [93mpunkt_tab[0m not found.
+  Please use the NLTK Downloader to obtain the resource:
+
+  [31m>>> import nltk
+  >>> nltk.download('punkt_tab')
+  [0m
+  For more information see: https://www.nltk.org/data.html
+
+  Attempted to load [93mtokenizers/punkt_tab/english/[0m
+
+  Searched in:
+    - 'C:\\Users\\Ahmad/nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\share\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\lib\\nltk_data'
+    - 'C:\\Users\\Ahmad\\AppData\\Roaming\\nltk_data'
+    - 'C:\\nltk_data'
+    - 'D:\\nltk_data'
+    - 'E:\\nltk_data'
+**********************************************************************
+
+2025-11-01 17:07:59,993 - app.models.classification_model - ERROR - Transformer classification error: list indices must be integers or slices, not str
+2025-11-01 17:07:59,993 - app.models.classification_model - INFO - Document classified as invoice with confidence 0.000
+2025-11-01 17:07:59,994 - app.models.extraction_model - INFO - Starting entity extraction...
+2025-11-01 17:08:00,548 - app.models.extraction_model - INFO - Entity extraction completed in 0.55 seconds
+2025-11-01 17:08:00,549 - app.models.extraction_model - INFO - Extracted 0 entities
+2025-11-01 17:08:00,549 - app.models.template_model - INFO - Starting template matching...
+2025-11-01 17:08:00,549 - app.models.template_model - INFO - Template matching completed in 0.00 seconds
+2025-11-01 17:08:00,550 - app.models.template_model - INFO - Found 0 matching templates
+2025-11-01 17:08:00,550 - app.validation.document_validator - INFO - Starting document validation for type: invoice
+2025-11-01 17:08:00,550 - app.validation.document_validator - INFO - Document validation completed in 0.00 seconds
+2025-11-01 17:08:00,550 - app.validation.document_validator - INFO - Validation result: FAILED
+2025-11-01 17:08:00,550 - app.routing.document_router - INFO - Starting document routing analysis...
+2025-11-01 17:08:00,551 - app.routing.document_router - INFO - Document routing completed in 0.00 seconds
+2025-11-01 17:08:00,551 - app.routing.document_router - INFO - Priority: medium, Destinations: 1
+2025-11-01 17:08:00,551 - main - INFO - Completed intelligence analysis in 0.72 seconds
+2025-11-01 17:08:24,341 - main - INFO - Projectena upload - File: 01- Introduction to Cryptography.pdf, Company: 68fc1a3ce3282f65bea73032, Dept: 68fd2c17caace48c410fee72
+2025-11-01 17:08:24,873 - httpx - INFO - HTTP Request: POST http://localhost:8000/ocr/process "HTTP/1.1 500 Internal Server Error"
+2025-11-01 17:08:24,878 - main - ERROR - OCR service error: 500 - Internal Server Error
+2025-11-01 17:08:24,878 - main - INFO - Starting comprehensive analysis for document: 01- Introduction to Cryptography.pdf
+2025-11-01 17:08:24,881 - app.models.classification_model - WARNING - Text preprocessing error: 
+**********************************************************************
+  Resource [93mpunkt_tab[0m not found.
+  Please use the NLTK Downloader to obtain the resource:
+
+  [31m>>> import nltk
+  >>> nltk.download('punkt_tab')
+  [0m
+  For more information see: https://www.nltk.org/data.html
+
+  Attempted to load [93mtokenizers/punkt_tab/english/[0m
+
+  Searched in:
+    - 'C:\\Users\\Ahmad/nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\share\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\lib\\nltk_data'
+    - 'C:\\Users\\Ahmad\\AppData\\Roaming\\nltk_data'
+    - 'C:\\nltk_data'
+    - 'D:\\nltk_data'
+    - 'E:\\nltk_data'
+**********************************************************************
+
+2025-11-01 17:08:24,900 - app.models.classification_model - ERROR - Transformer classification error: list indices must be integers or slices, not str
+2025-11-01 17:08:24,900 - app.models.classification_model - INFO - Document classified as invoice with confidence 0.000
+2025-11-01 17:08:24,900 - app.models.extraction_model - INFO - Starting entity extraction...
+2025-11-01 17:08:24,987 - app.models.extraction_model - INFO - Entity extraction completed in 0.09 seconds
+2025-11-01 17:08:24,988 - app.models.extraction_model - INFO - Extracted 0 entities
+2025-11-01 17:08:24,988 - app.models.template_model - INFO - Starting template matching...
+2025-11-01 17:08:24,989 - app.models.template_model - INFO - Template matching completed in 0.00 seconds
+2025-11-01 17:08:24,989 - app.models.template_model - INFO - Found 0 matching templates
+2025-11-01 17:08:24,989 - app.validation.document_validator - INFO - Starting document validation for type: invoice
+2025-11-01 17:08:24,990 - app.validation.document_validator - INFO - Document validation completed in 0.00 seconds
+2025-11-01 17:08:24,990 - app.validation.document_validator - INFO - Validation result: FAILED
+2025-11-01 17:08:24,990 - app.routing.document_router - INFO - Starting document routing analysis...
+2025-11-01 17:08:24,991 - app.routing.document_router - INFO - Document routing completed in 0.00 seconds
+2025-11-01 17:08:24,992 - app.routing.document_router - INFO - Priority: medium, Destinations: 1
+2025-11-01 17:08:24,994 - main - INFO - Completed intelligence analysis in 0.11 seconds
+2025-11-01 17:08:24,994 - main - ERROR - Projectena upload error: can only concatenate str (not "list") to str
+2025-11-01 17:08:57,137 - main - INFO - Projectena upload - File: 01- Introduction to Cryptography.pdf, Company: 68fc1a3ce3282f65bea73032, Dept: 68fd2c17caace48c410fee72
+2025-11-01 17:08:57,647 - httpx - INFO - HTTP Request: POST http://localhost:8000/ocr/process "HTTP/1.1 500 Internal Server Error"
+2025-11-01 17:08:57,650 - main - ERROR - OCR service error: 500 - Internal Server Error
+2025-11-01 17:08:57,651 - main - INFO - Starting comprehensive analysis for document: 01- Introduction to Cryptography.pdf
+2025-11-01 17:08:57,653 - app.models.classification_model - WARNING - Text preprocessing error: 
+**********************************************************************
+  Resource [93mpunkt_tab[0m not found.
+  Please use the NLTK Downloader to obtain the resource:
+
+  [31m>>> import nltk
+  >>> nltk.download('punkt_tab')
+  [0m
+  For more information see: https://www.nltk.org/data.html
+
+  Attempted to load [93mtokenizers/punkt_tab/english/[0m
+
+  Searched in:
+    - 'C:\\Users\\Ahmad/nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\share\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\lib\\nltk_data'
+    - 'C:\\Users\\Ahmad\\AppData\\Roaming\\nltk_data'
+    - 'C:\\nltk_data'
+    - 'D:\\nltk_data'
+    - 'E:\\nltk_data'
+**********************************************************************
+
+2025-11-01 17:08:57,666 - app.models.classification_model - ERROR - Transformer classification error: list indices must be integers or slices, not str
+2025-11-01 17:08:57,667 - app.models.classification_model - INFO - Document classified as invoice with confidence 0.000
+2025-11-01 17:08:57,667 - app.models.extraction_model - INFO - Starting entity extraction...
+2025-11-01 17:08:57,741 - app.models.extraction_model - INFO - Entity extraction completed in 0.07 seconds
+2025-11-01 17:08:57,742 - app.models.extraction_model - INFO - Extracted 0 entities
+2025-11-01 17:08:57,742 - app.models.template_model - INFO - Starting template matching...
+2025-11-01 17:08:57,742 - app.models.template_model - INFO - Template matching completed in 0.00 seconds
+2025-11-01 17:08:57,742 - app.models.template_model - INFO - Found 0 matching templates
+2025-11-01 17:08:57,743 - app.validation.document_validator - INFO - Starting document validation for type: invoice
+2025-11-01 17:08:57,743 - app.validation.document_validator - INFO - Document validation completed in 0.00 seconds
+2025-11-01 17:08:57,743 - app.validation.document_validator - INFO - Validation result: FAILED
+2025-11-01 17:08:57,743 - app.routing.document_router - INFO - Starting document routing analysis...
+2025-11-01 17:08:57,744 - app.routing.document_router - INFO - Document routing completed in 0.00 seconds
+2025-11-01 17:08:57,744 - app.routing.document_router - INFO - Priority: medium, Destinations: 1
+2025-11-01 17:08:57,744 - main - INFO - Completed intelligence analysis in 0.09 seconds
+2025-11-01 17:08:57,744 - main - ERROR - Projectena upload error: can only concatenate str (not "list") to str
+2025-11-01 17:14:45,296 - main - INFO - Starting Document Intelligence Service...
+2025-11-01 17:14:45,298 - app.classification.document_classifier - INFO - Initializing Document Classifier...
+2025-11-01 17:14:45,298 - app.models.classification_model - INFO - Initializing Document Classification Model...
+2025-11-01 17:14:45,299 - app.models.classification_model - WARNING - spaCy model not found, using basic processing
+2025-11-01 17:14:45,299 - app.models.classification_model - INFO - No pre-trained models found, will use rule-based classification
+2025-11-01 17:14:46,634 - app.models.classification_model - INFO - Transformer model initialized
+2025-11-01 17:14:46,635 - app.models.classification_model - INFO - Document Classification Model initialized successfully
+2025-11-01 17:14:46,635 - app.classification.document_classifier - INFO - Document Classifier initialized successfully
+2025-11-01 17:14:46,635 - app.extraction.entity_extractor - INFO - Initializing Entity Extractor...
+2025-11-01 17:14:46,635 - app.models.extraction_model - INFO - Initializing Entity Extraction Model...
+2025-11-01 17:14:46,636 - app.models.extraction_model - WARNING - spaCy model not found, using basic NER
+2025-11-01 17:14:47,172 - app.models.extraction_model - INFO - Transformer NER pipeline initialized
+2025-11-01 17:14:47,172 - app.models.extraction_model - INFO - Entity Extraction Model initialized successfully
+2025-11-01 17:14:47,173 - app.extraction.entity_extractor - INFO - Entity Extractor initialized successfully
+2025-11-01 17:14:47,173 - app.templates.template_manager - INFO - Initializing Template Manager...
+2025-11-01 17:14:47,173 - app.models.template_model - INFO - Initializing Template Matching Model...
+2025-11-01 17:14:47,175 - app.models.template_model - INFO - Loaded 4 templates from disk
+2025-11-01 17:14:47,175 - app.models.template_model - INFO - Template Matching Model initialized with 4 templates
+2025-11-01 17:14:47,175 - app.templates.template_manager - INFO - Template Manager initialized successfully
+2025-11-01 17:14:47,175 - app.validation.document_validator - INFO - Initializing Document Validator...
+2025-11-01 17:14:47,175 - app.validation.document_validator - INFO - Custom validation rules loaded
+2025-11-01 17:14:47,176 - app.validation.document_validator - INFO - Document Validator initialized successfully
+2025-11-01 17:14:47,176 - app.routing.document_router - INFO - Initializing Document Router...
+2025-11-01 17:14:47,176 - app.routing.document_router - INFO - Custom routing configurations loaded
+2025-11-01 17:14:47,176 - app.routing.document_router - INFO - Document Router initialized successfully
+2025-11-01 17:14:47,176 - main - INFO - Document Intelligence Service started successfully!
+2025-11-01 17:35:02,499 - main - INFO - Starting Document Intelligence Service...
+2025-11-01 17:35:02,508 - app.classification.document_classifier - INFO - Initializing Document Classifier...
+2025-11-01 17:35:02,509 - app.models.classification_model - INFO - Initializing Document Classification Model...
+2025-11-01 17:35:02,510 - app.models.classification_model - WARNING - spaCy model not found, using basic processing
+2025-11-01 17:35:02,510 - app.models.classification_model - INFO - No pre-trained models found, will use rule-based classification
+2025-11-01 17:35:03,862 - app.models.classification_model - INFO - Transformer model initialized
+2025-11-01 17:35:03,862 - app.models.classification_model - INFO - Document Classification Model initialized successfully
+2025-11-01 17:35:03,863 - app.classification.document_classifier - INFO - Document Classifier initialized successfully
+2025-11-01 17:35:03,863 - app.extraction.entity_extractor - INFO - Initializing Entity Extractor...
+2025-11-01 17:35:03,863 - app.models.extraction_model - INFO - Initializing Entity Extraction Model...
+2025-11-01 17:35:03,864 - app.models.extraction_model - WARNING - spaCy model not found, using basic NER
+2025-11-01 17:35:06,517 - app.models.extraction_model - INFO - Transformer NER pipeline initialized
+2025-11-01 17:35:06,518 - app.models.extraction_model - INFO - Entity Extraction Model initialized successfully
+2025-11-01 17:35:06,518 - app.extraction.entity_extractor - INFO - Entity Extractor initialized successfully
+2025-11-01 17:35:06,518 - app.templates.template_manager - INFO - Initializing Template Manager...
+2025-11-01 17:35:06,519 - app.models.template_model - INFO - Initializing Template Matching Model...
+2025-11-01 17:35:06,520 - app.models.template_model - INFO - Loaded 4 templates from disk
+2025-11-01 17:35:06,520 - app.models.template_model - INFO - Template Matching Model initialized with 4 templates
+2025-11-01 17:35:06,520 - app.templates.template_manager - INFO - Template Manager initialized successfully
+2025-11-01 17:35:06,520 - app.validation.document_validator - INFO - Initializing Document Validator...
+2025-11-01 17:35:06,520 - app.validation.document_validator - INFO - Custom validation rules loaded
+2025-11-01 17:35:06,520 - app.validation.document_validator - INFO - Document Validator initialized successfully
+2025-11-01 17:35:06,521 - app.routing.document_router - INFO - Initializing Document Router...
+2025-11-01 17:35:06,521 - app.routing.document_router - INFO - Custom routing configurations loaded
+2025-11-01 17:35:06,521 - app.routing.document_router - INFO - Document Router initialized successfully
+2025-11-01 17:35:06,521 - main - INFO - Document Intelligence Service started successfully!
+2025-11-01 17:36:08,285 - main - INFO - Projectena upload - File: 01- Introduction to Cryptography.pdf, Company: 68fc1a3ce3282f65bea73032, Dept: 68fd2c17caace48c410fee72
+2025-11-01 17:36:33,457 - httpx - INFO - HTTP Request: POST http://localhost:8000/ocr/process "HTTP/1.1 500 Internal Server Error"
+2025-11-01 17:36:33,481 - main - ERROR - OCR service error: 500 - Internal Server Error
+2025-11-01 17:36:33,483 - main - INFO - Starting comprehensive analysis for document: 01- Introduction to Cryptography.pdf
+2025-11-01 17:36:33,488 - app.models.classification_model - WARNING - Text preprocessing error: 
+**********************************************************************
+  Resource [93mpunkt_tab[0m not found.
+  Please use the NLTK Downloader to obtain the resource:
+
+  [31m>>> import nltk
+  >>> nltk.download('punkt_tab')
+  [0m
+  For more information see: https://www.nltk.org/data.html
+
+  Attempted to load [93mtokenizers/punkt_tab/english/[0m
+
+  Searched in:
+    - 'C:\\Users\\Ahmad/nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\share\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\lib\\nltk_data'
+    - 'C:\\Users\\Ahmad\\AppData\\Roaming\\nltk_data'
+    - 'C:\\nltk_data'
+    - 'D:\\nltk_data'
+    - 'E:\\nltk_data'
+**********************************************************************
+
+2025-11-01 17:36:35,042 - app.models.classification_model - ERROR - Transformer classification error: list indices must be integers or slices, not str
+2025-11-01 17:36:35,042 - app.models.classification_model - INFO - Document classified as invoice with confidence 0.000
+2025-11-01 17:36:35,042 - app.models.extraction_model - INFO - Starting entity extraction...
+2025-11-01 17:36:35,105 - app.models.extraction_model - INFO - Entity extraction completed in 0.06 seconds
+2025-11-01 17:36:35,106 - app.models.extraction_model - INFO - Extracted 0 entities
+2025-11-01 17:36:35,106 - app.models.template_model - INFO - Starting template matching...
+2025-11-01 17:36:35,111 - app.models.template_model - INFO - Template matching completed in 0.00 seconds
+2025-11-01 17:36:35,111 - app.models.template_model - INFO - Found 0 matching templates
+2025-11-01 17:36:35,112 - app.validation.document_validator - INFO - Starting document validation for type: invoice
+2025-11-01 17:36:35,113 - app.validation.document_validator - INFO - Document validation completed in 0.00 seconds
+2025-11-01 17:36:35,114 - app.validation.document_validator - INFO - Validation result: FAILED
+2025-11-01 17:36:35,114 - app.routing.document_router - INFO - Starting document routing analysis...
+2025-11-01 17:36:35,115 - app.routing.document_router - INFO - Document routing completed in 0.00 seconds
+2025-11-01 17:36:35,115 - app.routing.document_router - INFO - Priority: medium, Destinations: 1
+2025-11-01 17:36:35,117 - main - INFO - Completed intelligence analysis in 1.63 seconds
+2025-11-01 17:36:35,118 - main - ERROR - Projectena upload error: can only concatenate str (not "list") to str
+2025-11-01 17:36:58,907 - main - INFO - Projectena upload - File: 01- Introduction to Cryptography.pdf, Company: 68fc1a3ce3282f65bea73032, Dept: 68fd2c17caace48c410fee72
+2025-11-01 17:36:59,473 - httpx - INFO - HTTP Request: POST http://localhost:8000/ocr/process "HTTP/1.1 500 Internal Server Error"
+2025-11-01 17:36:59,476 - main - ERROR - OCR service error: 500 - Internal Server Error
+2025-11-01 17:36:59,477 - main - INFO - Starting comprehensive analysis for document: 01- Introduction to Cryptography.pdf
+2025-11-01 17:36:59,479 - app.models.classification_model - WARNING - Text preprocessing error: 
+**********************************************************************
+  Resource [93mpunkt_tab[0m not found.
+  Please use the NLTK Downloader to obtain the resource:
+
+  [31m>>> import nltk
+  >>> nltk.download('punkt_tab')
+  [0m
+  For more information see: https://www.nltk.org/data.html
+
+  Attempted to load [93mtokenizers/punkt_tab/english/[0m
+
+  Searched in:
+    - 'C:\\Users\\Ahmad/nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\share\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\lib\\nltk_data'
+    - 'C:\\Users\\Ahmad\\AppData\\Roaming\\nltk_data'
+    - 'C:\\nltk_data'
+    - 'D:\\nltk_data'
+    - 'E:\\nltk_data'
+**********************************************************************
+
+2025-11-01 17:36:59,499 - app.models.classification_model - ERROR - Transformer classification error: list indices must be integers or slices, not str
+2025-11-01 17:36:59,499 - app.models.classification_model - INFO - Document classified as invoice with confidence 0.000
+2025-11-01 17:36:59,499 - app.models.extraction_model - INFO - Starting entity extraction...
+2025-11-01 17:36:59,645 - app.models.extraction_model - INFO - Entity extraction completed in 0.15 seconds
+2025-11-01 17:36:59,645 - app.models.extraction_model - INFO - Extracted 0 entities
+2025-11-01 17:36:59,646 - app.models.template_model - INFO - Starting template matching...
+2025-11-01 17:36:59,646 - app.models.template_model - INFO - Template matching completed in 0.00 seconds
+2025-11-01 17:36:59,646 - app.models.template_model - INFO - Found 0 matching templates
+2025-11-01 17:36:59,646 - app.validation.document_validator - INFO - Starting document validation for type: invoice
+2025-11-01 17:36:59,647 - app.validation.document_validator - INFO - Document validation completed in 0.00 seconds
+2025-11-01 17:36:59,647 - app.validation.document_validator - INFO - Validation result: FAILED
+2025-11-01 17:36:59,647 - app.routing.document_router - INFO - Starting document routing analysis...
+2025-11-01 17:36:59,647 - app.routing.document_router - INFO - Document routing completed in 0.00 seconds
+2025-11-01 17:36:59,647 - app.routing.document_router - INFO - Priority: medium, Destinations: 1
+2025-11-01 17:36:59,648 - main - INFO - Completed intelligence analysis in 0.17 seconds
+2025-11-01 17:36:59,648 - main - ERROR - Projectena upload error: can only concatenate str (not "list") to str
+2025-11-01 17:37:48,896 - main - INFO - Projectena upload - File: 01- Introduction to Cryptography.pdf, Company: 68fc1a3ce3282f65bea73032, Dept: 68fd2c17caace48c410fee72
+2025-11-01 17:37:49,419 - httpx - INFO - HTTP Request: POST http://localhost:8000/ocr/process "HTTP/1.1 500 Internal Server Error"
+2025-11-01 17:37:49,421 - main - ERROR - OCR service error: 500 - Internal Server Error
+2025-11-01 17:37:49,422 - main - INFO - Starting comprehensive analysis for document: 01- Introduction to Cryptography.pdf
+2025-11-01 17:37:49,424 - app.models.classification_model - WARNING - Text preprocessing error: 
+**********************************************************************
+  Resource [93mpunkt_tab[0m not found.
+  Please use the NLTK Downloader to obtain the resource:
+
+  [31m>>> import nltk
+  >>> nltk.download('punkt_tab')
+  [0m
+  For more information see: https://www.nltk.org/data.html
+
+  Attempted to load [93mtokenizers/punkt_tab/english/[0m
+
+  Searched in:
+    - 'C:\\Users\\Ahmad/nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\share\\nltk_data'
+    - 'C:\\Users\\Ahmad\\Documents\\GitHub\\adaptive-Dokumentenverarbeitung\\.venv\\lib\\nltk_data'
+    - 'C:\\Users\\Ahmad\\AppData\\Roaming\\nltk_data'
+    - 'C:\\nltk_data'
+    - 'D:\\nltk_data'
+    - 'E:\\nltk_data'
+**********************************************************************
+
+2025-11-01 17:37:49,451 - app.models.classification_model - ERROR - Transformer classification error: list indices must be integers or slices, not str
+2025-11-01 17:37:49,452 - app.models.classification_model - INFO - Document classified as invoice with confidence 0.000
+2025-11-01 17:37:49,452 - app.models.extraction_model - INFO - Starting entity extraction...
+2025-11-01 17:37:49,593 - app.models.extraction_model - INFO - Entity extraction completed in 0.14 seconds
+2025-11-01 17:37:49,593 - app.models.extraction_model - INFO - Extracted 0 entities
+2025-11-01 17:37:49,594 - app.models.template_model - INFO - Starting template matching...
+2025-11-01 17:37:49,594 - app.models.template_model - INFO - Template matching completed in 0.00 seconds
+2025-11-01 17:37:49,594 - app.models.template_model - INFO - Found 0 matching templates
+2025-11-01 17:37:49,594 - app.validation.document_validator - INFO - Starting document validation for type: invoice
+2025-11-01 17:37:49,595 - app.validation.document_validator - INFO - Document validation completed in 0.00 seconds
+2025-11-01 17:37:49,595 - app.validation.document_validator - INFO - Validation result: FAILED
+2025-11-01 17:37:49,595 - app.routing.document_router - INFO - Starting document routing analysis...
+2025-11-01 17:37:49,595 - app.routing.document_router - INFO - Document routing completed in 0.00 seconds
+2025-11-01 17:37:49,595 - app.routing.document_router - INFO - Priority: medium, Destinations: 1
+2025-11-01 17:37:49,596 - main - INFO - Completed intelligence analysis in 0.17 seconds
+2025-11-01 17:37:49,596 - main - ERROR - Projectena upload error: can only concatenate str (not "list") to str

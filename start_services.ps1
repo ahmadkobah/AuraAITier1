@@ -19,7 +19,7 @@ function Start-Service {
 Start-Service "OCR" 8000 (Join-Path $basePath "python-ocr-service")
 Start-Service "ICR" 8001 (Join-Path $basePath "python-icr-service")
 Start-Service "NLP" 8002 (Join-Path $basePath "python-nlp-service")
-Start-Service "Document Intelligence" 8004 (Join-Path $basePath "python-document-intelligence-service")
+Start-Service "Document Intelligence" 8003 (Join-Path $basePath "python-document-intelligence-service")
 
 Write-Host ""
 Write-Host "All services started! Check individual PowerShell windows for status." -ForegroundColor Green
@@ -28,7 +28,7 @@ Write-Host "Service URLs:" -ForegroundColor Cyan
 Write-Host "  OCR Service: http://127.0.0.1:8000" -ForegroundColor White
 Write-Host "  ICR Service: http://127.0.0.1:8001" -ForegroundColor White
 Write-Host "  NLP Service: http://127.0.0.1:8002" -ForegroundColor White
-Write-Host "  Document Intelligence: http://127.0.0.1:8004" -ForegroundColor White
+Write-Host "  Document Intelligence: http://127.0.0.1:8003" -ForegroundColor White
 Write-Host ""
 Write-Host "Press any key to exit..." -ForegroundColor Gray
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")

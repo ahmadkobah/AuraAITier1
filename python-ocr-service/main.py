@@ -50,6 +50,13 @@ except ImportError:  # pragma: no cover - fallback definition
         uri: str
         checksum: Optional[str] = None
 
+# PDF Annotation Support
+try:
+    from shared.pdf_annotator import annotate_ocr_result
+    PDF_ANNOTATOR_AVAILABLE = True
+except ImportError:
+    PDF_ANNOTATOR_AVAILABLE = False
+
     class OcrJobRequest(BaseModel):  # type: ignore
         document_id: str
         company_id: str
@@ -536,7 +543,11 @@ jobs: Dict[str, OcrJobResult] = {}
 
 
 @app.post("/ocr/process")
-async def ocr_process(file: UploadFile = File(...), prompt: Optional[str] = None):
+async def ocr_process(
+    file: UploadFile = File(...),
+    prompt: Optional[str] = None,
+    create_annotated_pdf: bool = True,
+):
     """
     Process a single file for OCR with intelligent routing.
     
@@ -547,9 +558,10 @@ async def ocr_process(file: UploadFile = File(...), prompt: Optional[str] = None
     Args:
         file: Uploaded image or PDF file
         prompt: Optional prompt for the model
+        create_annotated_pdf: If True, creates an annotated PDF with extracted text overlaid
         
     Returns:
-        OCR result with extracted text, confidence score, routing info, and metadata
+        OCR result with extracted text, confidence score, routing info, metadata, and annotated PDF path
         
     Raises:
         HTTPException: If file type is not supported
@@ -558,6 +570,8 @@ async def ocr_process(file: UploadFile = File(...), prompt: Optional[str] = None
         raise HTTPException(status_code=400, detail="File must be an image or PDF")
     
     tmp_path = save_upload_to_temp(file)
+    temp_path_for_annotation = tmp_path if create_annotated_pdf else None
+    
     try:
         # Get appropriate engine based on document complexity
         ocr_engine, engine_name, complexity_info = get_engine(tmp_path)
@@ -570,15 +584,35 @@ async def ocr_process(file: UploadFile = File(...), prompt: Optional[str] = None
             "engine_used": engine_name,
             "routing_decision": complexity_info,
         }
-        return {
+        
+        response = {
             "text": result["text"],
             "confidence": 0.92,  # Will be more accurate with actual model outputs
             "metadata": metadata,
             "processing_time": result["duration"],
             "engine": engine_name,
+            "annotated_pdf": None,
         }
+        
+        # Create annotated PDF if requested
+        if create_annotated_pdf and PDF_ANNOTATOR_AVAILABLE and temp_path_for_annotation:
+            try:
+                print("Creating annotated PDF...")
+                annotated_path = annotate_ocr_result(
+                    original_path=temp_path_for_annotation,
+                    ocr_result=result,
+                )
+                response["annotated_pdf"] = str(annotated_path)
+                print(f"✅ Annotated PDF created: {annotated_path}")
+            except Exception as e:
+                print(f"Failed to create annotated PDF: {e}")
+                response["annotated_pdf_error"] = str(e)
+        
+        return response
     finally:
-        tmp_path.unlink(missing_ok=True)
+        # Only delete temp file if we're not creating an annotated PDF
+        if not create_annotated_pdf:
+            tmp_path.unlink(missing_ok=True)
 
 
 async def _run_job(job_id: str, payload: OcrJobRequest):

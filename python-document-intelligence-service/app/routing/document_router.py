@@ -873,6 +873,9 @@ class DocumentRouter:
         """
         Generate folder path structure for document storage.
         
+        Structure: department/year/month/documentType
+        Example: /Finance/2025/November/Invoices
+        
         Args:
             company_id: Company identifier
             department_id: Department identifier
@@ -887,36 +890,54 @@ class DocumentRouter:
                 date = datetime.utcnow()
             
             year = date.strftime("%Y")
-            month = date.strftime("%m")
+            month_num = date.strftime("%m")
             day = date.strftime("%d")
             
-            # Clean document type for folder name
+            # Get month name
+            month_names = [
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"
+            ]
+            month_name = month_names[int(month_num) - 1]
+            
+            # Clean document type for folder name (capitalize first letter)
             clean_doc_type = (document_type or "general").lower().replace(" ", "_")
+            clean_doc_type = clean_doc_type.capitalize() + "s"  # e.g., "invoice" -> "Invoices"
             
-            # Build folder hierarchy
+            # Build folder hierarchy: /company/department/year/month/docType
             if company_id and department_id:
-                # Full hierarchy: /company/department/doc_type/year/month/
-                base_path = f"/{company_id}/{department_id}/{clean_doc_type}"
+                # Full hierarchy: /company/department/year/month/docType
+                base_path = f"/{company_id}/{department_id}"
+                year_path = f"{base_path}/{year}"
+                month_path = f"{year_path}/{month_name}"
+                full_path = f"{month_path}/{clean_doc_type}"
             elif company_id:
-                # Company hierarchy: /company/doc_type/year/month/
-                base_path = f"/{company_id}/{clean_doc_type}"
+                # Company hierarchy: /company/year/month/docType
+                base_path = f"/{company_id}"
+                year_path = f"{base_path}/{year}"
+                month_path = f"{year_path}/{month_name}"
+                full_path = f"{month_path}/{clean_doc_type}"
             elif department_id:
-                # Department hierarchy: /departments/department/doc_type/year/month/
-                base_path = f"/departments/{department_id}/{clean_doc_type}"
+                # Department hierarchy: /department/year/month/docType
+                base_path = f"/{department_id}"
+                year_path = f"{base_path}/{year}"
+                month_path = f"{year_path}/{month_name}"
+                full_path = f"{month_path}/{clean_doc_type}"
             else:
-                # Default hierarchy: /documents/doc_type/year/month/
-                base_path = f"/documents/{clean_doc_type}"
-            
-            # Add date-based subfolder structure
-            dated_path = f"{base_path}/{year}/{month}"
-            full_path_with_day = f"{base_path}/{year}/{month}/{day}"
+                # Default hierarchy: /documents/year/month/docType
+                base_path = "/documents"
+                year_path = f"{base_path}/{year}"
+                month_path = f"{year_path}/{month_name}"
+                full_path = f"{month_path}/{clean_doc_type}"
             
             return {
                 "base_path": base_path,
-                "dated_path": dated_path,
-                "full_path": full_path_with_day,
+                "year_path": year_path,
+                "month_path": month_path,
+                "full_path": full_path,
                 "year": year,
-                "month": month,
+                "month": month_name,
+                "month_num": month_num,
                 "day": day,
                 "document_type": clean_doc_type,
                 "company_id": company_id,
@@ -927,8 +948,9 @@ class DocumentRouter:
             logger.error(f"Folder path generation error: {str(e)}")
             # Return safe default path
             return {
-                "base_path": "/documents/general",
-                "dated_path": "/documents/general",
+                "base_path": "/documents",
+                "year_path": "/documents",
+                "month_path": "/documents",
                 "full_path": "/documents/general",
                 "error": str(e)
             }

@@ -50,6 +50,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
+# Import PDF annotator
+try:
+    from shared.pdf_annotator import PDFAnnotator, annotate_hybrid_result
+    PDF_ANNOTATOR_AVAILABLE = True
+except ImportError:
+    PDF_ANNOTATOR_AVAILABLE = False
+    print("⚠️  PDF annotator not available - install PyMuPDF: pip install PyMuPDF")
+
 try:
     from shared.schemas import FileReference, IcrJobRequest, IcrJobResult
 except ImportError:  # pragma: no cover - fallback definitions
@@ -758,6 +766,7 @@ async def analyze_mixed_document(file: UploadFile = File(...)):
 async def process_mixed_document_endpoint(
     file: UploadFile = File(...),
     ocr_service_url: str = "http://127.0.0.1:8000",
+    create_annotated_pdf: bool = True,
     model: TrOCRHandwritingModel = Depends(get_icr_model)
 ):
     """
@@ -770,15 +779,28 @@ async def process_mixed_document_endpoint(
     Args:
         file: Document image file
         ocr_service_url: URL of OCR service (default: localhost:8000)
+        create_annotated_pdf: Create annotated PDF copy (default: True)
         
     Returns:
         Combined text extraction results with region information
+        and optionally the path to annotated PDF
     """
     if not validate_image_file(file):
         raise HTTPException(status_code=400, detail="Invalid image format")
     
+    # Save uploaded file temporarily
+    temp_path = None
     try:
-        image = await load_image_from_upload(file)
+        # Save upload to temp file
+        suffix = Path(file.filename or "upload").suffix
+        fd, temp_path_str = tempfile.mkstemp(suffix=suffix)
+        temp_path = Path(temp_path_str)
+        
+        with os.fdopen(fd, "wb") as tmp_file:
+            shutil.copyfileobj(file.file, tmp_file)
+        
+        # Load image
+        image = cv2.imread(str(temp_path))
         
         # Detect mixed content
         detector = MixedDocumentDetector()
@@ -788,7 +810,8 @@ async def process_mixed_document_endpoint(
             "analysis": analysis.to_dict(),
             "regions": [],
             "combined_text": "",
-            "processing_time": 0.0
+            "processing_time": 0.0,
+            "annotated_pdf": None
         }
         
         start_time = datetime.utcnow()
@@ -893,11 +916,30 @@ async def process_mixed_document_endpoint(
         results["processing_time"] = (end_time - start_time).total_seconds()
         results["timestamp"] = end_time.isoformat()
         
+        # Create annotated PDF if requested
+        if create_annotated_pdf and PDF_ANNOTATOR_AVAILABLE and temp_path:
+            try:
+                logger.info("Creating annotated PDF...")
+                annotated_path = annotate_hybrid_result(
+                    original_path=temp_path,
+                    hybrid_result=results
+                )
+                results["annotated_pdf"] = str(annotated_path)
+                logger.info(f"✅ Annotated PDF created: {annotated_path}")
+            except Exception as e:
+                logger.error(f"Failed to create annotated PDF: {e}")
+                results["annotated_pdf_error"] = str(e)
+        
         return results
         
     except Exception as e:
         logger.error(f"Hybrid processing failed: {e}")
         raise HTTPException(status_code=500, detail=f"Hybrid processing failed: {e}")
+    
+    finally:
+        # Note: Don't delete temp_path here if we created an annotated PDF from it
+        # The annotated PDF is saved in the same directory
+        pass
 
 
 @app.post("/preprocess_old")
