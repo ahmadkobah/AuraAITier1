@@ -648,9 +648,12 @@ async def analyze_uploaded_file(
                     "createAfterProcessing": True,
                     "finalPath": folder_paths.get("full_path", f"/{str(company_id)}/{str(department_id)}/{str(document_type)}") if folder_paths else f"/{str(company_id)}/{str(department_id)}/{str(document_type)}",
                     "components": {
-                        "year": folder_paths.get("year", datetime.utcnow().strftime("%Y")) if folder_paths else datetime.utcnow().strftime("%Y"),
-                        "month": folder_paths.get("month", datetime.utcnow().strftime("%B")) if folder_paths else datetime.utcnow().strftime("%B"),
-                        "docType": str(document_type)
+                        # Ensure year is never empty - fallback to current year
+                        "year": str(folder_paths.get("year") or datetime.utcnow().strftime("%Y")) if folder_paths else datetime.utcnow().strftime("%Y"),
+                        # Ensure month is never empty - fallback to current month
+                        "month": str(folder_paths.get("month") or datetime.utcnow().strftime("%B")) if folder_paths else datetime.utcnow().strftime("%B"),
+                        # Ensure docType is never empty - fallback to "Unknown"
+                        "docType": str(document_type) if document_type and str(document_type).strip() else "Unknown"
                     },
                     "shouldAutoCreate": True,
                     "checkExistingFirst": True
@@ -854,7 +857,7 @@ async def analyze_for_projectena(
             "confidenceScore": confidence_score,
             "signed": signed,
             
-            # Suggested folder path - ensure all components are strings
+            # Extract and validate folder components (ensure never empty)
             "suggestedPath": folder_paths.get("full_path", f"/{str(companyId)}/{str(departmentId)}/{str(document_type)}") if folder_paths else f"/{str(companyId)}/{str(departmentId)}/{str(document_type)}",
             
             # Folder creation workflow (create AFTER processing completes)
@@ -862,9 +865,12 @@ async def analyze_for_projectena(
                 "createAfterProcessing": True,  # Don't create folder until processing is done
                 "finalPath": folder_paths.get("full_path", f"/{str(companyId)}/{str(departmentId)}/{str(document_type)}") if folder_paths else f"/{str(companyId)}/{str(departmentId)}/{str(document_type)}",
                 "components": {
-                    "year": folder_paths.get("year", datetime.utcnow().strftime("%Y")) if folder_paths else datetime.utcnow().strftime("%Y"),
-                    "month": folder_paths.get("month", datetime.utcnow().strftime("%B")) if folder_paths else datetime.utcnow().strftime("%B"),
-                    "docType": str(document_type)
+                    # Ensure year is never empty - fallback to current year
+                    "year": str(folder_paths.get("year") or datetime.utcnow().strftime("%Y")) if folder_paths else datetime.utcnow().strftime("%Y"),
+                    # Ensure month is never empty - fallback to current month
+                    "month": str(folder_paths.get("month") or datetime.utcnow().strftime("%B")) if folder_paths else datetime.utcnow().strftime("%B"),
+                    # Ensure docType is never empty - fallback to "Unknown"
+                    "docType": str(document_type) if document_type and str(document_type).strip() else "Unknown"
                 },
                 "shouldAutoCreate": True,  # Auto-create if folder doesn't exist
                 "checkExistingFirst": True  # Check if folder already exists before creating
@@ -992,9 +998,12 @@ async def receive_from_scanner(
                 "createAfterProcessing": True,
                 "finalPath": folder_paths.get("full_path", f"/{str(company_id)}/{str(department_id)}/{str(document_type)}") if folder_paths else f"/{str(company_id)}/{str(department_id)}/{str(document_type)}",
                 "components": {
-                    "year": folder_paths.get("year", datetime.utcnow().strftime("%Y")) if folder_paths else datetime.utcnow().strftime("%Y"),
-                    "month": folder_paths.get("month", datetime.utcnow().strftime("%B")) if folder_paths else datetime.utcnow().strftime("%B"),
-                    "docType": str(document_type)
+                    # Ensure year is never empty - fallback to current year
+                    "year": str(folder_paths.get("year") or datetime.utcnow().strftime("%Y")) if folder_paths else datetime.utcnow().strftime("%Y"),
+                    # Ensure month is never empty - fallback to current month
+                    "month": str(folder_paths.get("month") or datetime.utcnow().strftime("%B")) if folder_paths else datetime.utcnow().strftime("%B"),
+                    # Ensure docType is never empty - fallback to "Unknown"
+                    "docType": str(document_type) if document_type and str(document_type).strip() else "Unknown"
                 },
                 "shouldAutoCreate": True,
                 "checkExistingFirst": True

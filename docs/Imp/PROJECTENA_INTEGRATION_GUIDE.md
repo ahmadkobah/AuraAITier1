@@ -5,7 +5,7 @@ The Intelligence Service now provides a complete `folderWorkflow` object that te
 
 ## Intelligence Service Response Structure
 
-All upload endpoints now return a `folderWorkflow` object:
+All upload endpoints now return a `folderWorkflow` object with **validated, non-empty components**:
 
 ```json
 {
@@ -13,9 +13,9 @@ All upload endpoints now return a `folderWorkflow` object:
     "createAfterProcessing": true,
     "finalPath": "/CompanyName/2025/November/Invoices",
     "components": {
-      "year": "2025",
-      "month": "November",
-      "docType": "Invoices"
+      "year": "2025",        // Never empty - fallback to current year
+      "month": "November",   // Never empty - fallback to current month
+      "docType": "Invoices"  // Never empty - fallback to "Unknown"
     },
     "shouldAutoCreate": true,
     "checkExistingFirst": true
@@ -25,6 +25,16 @@ All upload endpoints now return a `folderWorkflow` object:
   "status": "processed"
 }
 ```
+
+### Validation Rules
+
+The Intelligence Service automatically validates all components:
+
+- **year**: Uses `folder_paths.year` or falls back to current year (e.g., "2025")
+- **month**: Uses `folder_paths.month` or falls back to current month (e.g., "November")  
+- **docType**: Uses classification result or falls back to "Unknown"
+
+**All values are guaranteed to be non-empty strings**, preventing Mongoose validation errors.
 
 ## Affected Endpoints
 
