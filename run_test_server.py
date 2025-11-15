@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 Test Server Launcher
-Runs test endpoints on port 8001 (separate from main app on 8000)
+Runs test endpoints on port 8001 (separate from main app on 8080)
 """
 
 import subprocess
@@ -16,7 +16,7 @@ def run_test_server():
     print("=" * 70)
     print()
     print("📊 Configuration:")
-    print("  • Main App:  http://localhost:8000")
+    print("  • Main App:  http://localhost:8080")
     print("  • Test Server: http://localhost:8001")
     print()
     print("🧪 Available Test Endpoints:")
@@ -30,19 +30,19 @@ def run_test_server():
     print()
     
     # Check if main app is running
-    print("Checking if main app is running on port 8000...")
+    print("Checking if main app is running on port 8080...")
     time.sleep(1)
     
     try:
         import requests
-        response = requests.get("http://localhost:8000/health", timeout=2)
+        response = requests.get("http://localhost:8080/health", timeout=2)
         if response.status_code == 200:
-            print("✅ Main app is running on port 8000")
+            print("✅ Main app is running on port 8080")
         else:
             print("⚠️  Main app might not be responding correctly")
     except:
-        print("⚠️  Could not reach main app on port 8000")
-        print("   Make sure to run: uvicorn app.main:app --port 8000")
+        print("⚠️  Could not reach main app on port 8080")
+        print("   Make sure to run: uvicorn app.main:app --port 8080")
     
     print()
     print("Starting test server on port 8001...")

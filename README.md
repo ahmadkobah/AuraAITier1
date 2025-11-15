@@ -71,10 +71,10 @@ cp .env.example .env
 # Edit .env with your MongoDB connection
 
 # 5. Run main server
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8080
 ```
 
-Main server will start on `http://localhost:8000`
+Main server will start on `http://localhost:8080`
 
 ### Testing (Optional)
 
@@ -236,7 +236,7 @@ Node.js/React backend integration:
 
 ```javascript
 // 1. Queue processing
-await fetch('http://localhost:8000/api/v1/process', {
+await fetch('http://localhost:8080/api/v1/process', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
@@ -252,13 +252,13 @@ if (doc.status === 'COMPLETE') {
 }
 
 // 3. Search documents
-const results = await fetch('http://localhost:8000/api/v1/search', {
+const results = await fetch('http://localhost:8080/api/v1/search', {
   method: 'POST',
   body: JSON.stringify({ query: 'payment terms', top_k: 5 })
 });
 
 // 4. Ask questions
-const answer = await fetch('http://localhost:8000/api/v1/query', {
+const answer = await fetch('http://localhost:8080/api/v1/query', {
   method: 'POST',
   body: JSON.stringify({
     doc_id: 'doc_12345',

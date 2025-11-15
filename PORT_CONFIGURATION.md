@@ -6,19 +6,19 @@ The AI Service Tier 1 now runs on **two separate ports** to avoid conflicts:
 
 | Port | Service | Purpose | Status |
 |------|---------|---------|--------|
-| **8000** | Main App | Production API endpoints | Active/Required |
+| **8080** | Main App | Production API endpoints | Active/Required |
 | **8001** | Test Server | Development & testing | Optional |
 
 ## Running the Services
 
-### Terminal 1: Main Application (Port 8000)
+### Terminal 1: Main Application (Port 8080)
 
 ```powershell
 # Windows
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
 
 # Or with reload for development
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 ```
 
 **Endpoints available:**
@@ -141,7 +141,7 @@ Both ports are automatically configured in `docker-compose.yml`:
 ```yaml
 ai-service:
   ports:
-    - "8000:8000"  # Main app
+    - "8080:8080"  # Main app
     - "8001:8001"  # Test server (optional)
 ```
 
@@ -151,7 +151,7 @@ docker-compose up -d
 ```
 
 Then access:
-- Main app: http://localhost:8000
+- Main app: http://localhost:8080
 - Test server: http://localhost:8001
 
 ## Troubleshooting
@@ -162,7 +162,7 @@ If you get "Address already in use" error:
 
 ```powershell
 # Check what's using the port
-netstat -ano | findstr ":8000"
+netstat -ano | findstr ":8080"
 netstat -ano | findstr ":8001"
 
 # Kill process by ID
@@ -174,7 +174,7 @@ taskkill /PID <PID> /F
 1. Check if uvicorn started successfully
 2. Verify ports are accessible:
    ```powershell
-   Test-NetConnection localhost -port 8000
+   Test-NetConnection localhost -port 8080
    Test-NetConnection localhost -port 8001
    ```
 3. Check firewall settings
@@ -192,7 +192,7 @@ nvidia-smi
 
 ## Performance Notes
 
-- **Main App (Port 8000)**: Production-ready, handles all API requests
+- **Main App (Port 8080)**: Production-ready, handles all API requests
 - **Test Server (Port 8001)**: For development, tests run in-memory
 - **Startup Time**: 
   - Main app: ~60-90 seconds (loads core models)
@@ -201,11 +201,11 @@ nvidia-smi
 
 ## Next Steps
 
-1. ✅ Start main app on port 8000: `python -m uvicorn app.main:app --port 8000`
+1. ✅ Start main app on port 8080: `python -m uvicorn app.main:app --port 8080`
 2. ✅ Start test server on port 8001: `.\run_test_server.ps1`
 3. ✅ Test endpoints individually
-4. ✅ Integrate with Node/React backend (calls port 8000)
+4. ✅ Integrate with Node/React backend (calls port 8080)
 
 ---
 
-**Remember:** Port 8000 is for production use with your Node/React backend. Port 8001 is optional and only for development/testing.
+**Remember:** Port 8080 is for production use with your Node/React backend. Port 8001 is optional and only for development/testing.

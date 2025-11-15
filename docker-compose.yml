@@ -29,12 +29,12 @@ services:
     container_name: ai-service-tier1
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8080:8080"
     environment:
       DATABASE_URL: mongodb://admin:password@mongodb:27017
       MAIN_DB_NAME: document_processing
       HOST: 0.0.0.0
-      PORT: 8000
+      PORT: 8080
       MODELS_DIR: /app/models
       LLAMA_MODEL_PATH: /app/models/llama-3.2-3b-gguf/model.gguf
       LOG_LEVEL: INFO
@@ -48,7 +48,7 @@ services:
       mongodb:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -1,6 +1,6 @@
 """
 Test Server - Runs on port 8001 for development/testing
-Separate from main production app on port 8000
+Separate from main production app on port 8080
 """
 
 import os

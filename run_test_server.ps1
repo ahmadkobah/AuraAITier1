@@ -1,6 +1,6 @@
 # Test Server Runner - Windows PowerShell
 # Runs test endpoints on port 8001
-# Main app runs on port 8000
+# Main app runs on port 8080
 
 Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║   AI Service Tier 1 - Test Server (Port 8001)                   ║" -ForegroundColor Cyan
@@ -8,7 +8,7 @@ Write-Host "╚═════════════════════�
 Write-Host ""
 
 Write-Host "📊 Configuration:" -ForegroundColor Green
-Write-Host "   • Main App:     http://localhost:8000" -ForegroundColor White
+Write-Host "   • Main App:     http://localhost:8080" -ForegroundColor White
 Write-Host "   • Test Server:  http://localhost:8001" -ForegroundColor Yellow
 Write-Host ""
 
