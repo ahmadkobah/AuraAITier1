@@ -1,4 +1,0 @@
-Sample test document for processing
-Invoice #12345
-Amount: $1500.00
-Due Date: December 1, 2024
