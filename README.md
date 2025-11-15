@@ -70,11 +70,27 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your MongoDB connection
 
-# 5. Run server
+# 5. Run main server
 uvicorn app.main:app --reload --port 8000
 ```
 
-Server will start on `http://localhost:8000`
+Main server will start on `http://localhost:8000`
+
+### Testing (Optional)
+
+Run the test server on a separate port (8001) to test individual components:
+
+```bash
+# In a new terminal, from the same directory
+python run_test_server.py
+```
+
+Test server will start on `http://localhost:8001` with endpoints:
+- `GET /test/health` - Test health check
+- `GET /test/models` - List loaded models
+- `POST /test/simple-ocr?image_path=<path>` - Test OCR on image
+- `POST /test/embedding?text=<text>` - Test text embedding
+- `POST /test/classification?text=<text>` - Test zero-shot classification
 
 ### Docker Deployment
 
