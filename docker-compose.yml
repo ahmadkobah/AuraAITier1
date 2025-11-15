@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: ai-service-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-network
+
+  # AI Service Tier 1
+  ai-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-service-tier1
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: mongodb://admin:password@mongodb:27017
+      MAIN_DB_NAME: document_processing
+      HOST: 0.0.0.0
+      PORT: 8000
+      MODELS_DIR: /app/models
+      LLAMA_MODEL_PATH: /app/models/llama-3.2-3b-gguf/model.gguf
+      LOG_LEVEL: INFO
+      USE_GPU: "false"  # Set to "true" if using GPU with NVIDIA
+      CUDA_DEVICE: "0"
+    volumes:
+      - ./models:/app/models:ro
+      - ./storage:/storage
+      - ./uploads:/uploads
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - ai-network
+    # Optional: GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # Optional: MongoDB Express (web UI for MongoDB)
+  mongodb-express:
+    image: mongo-express:latest
+    container_name: ai-service-mongo-express
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://admin:password@mongodb:27017
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: password
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: password
+    depends_on:
+      - mongodb
+    networks:
+      - ai-network
+
+volumes:
+  mongodb_data:
+    driver: local
+
+networks:
+  ai-network:
+    driver: bridge
+
+# Usage:
+# docker-compose up -d              # Start all services
+# docker-compose logs -f ai-service # Follow AI service logs
+# docker-compose down               # Stop all services
+# docker-compose ps                 # Check service status
+#
+# Access:
+# - AI Service: http://localhost:8000
+# - MongoDB Express: http://localhost:8081 (admin/password)
+# - MongoDB Direct: mongodb://admin:password@localhost:27017
