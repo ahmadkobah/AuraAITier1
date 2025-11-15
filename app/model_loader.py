@@ -8,7 +8,6 @@ import logging
 from typing import Dict, Any
 import torch
 from sentence_transformers import SentenceTransformer
-from transformers import AutoProcessor, AutoModelForCausalLM
 from paddleocr import PaddleOCR
 
 logger = logging.getLogger("model_loader")
@@ -34,10 +33,9 @@ def load_all_models() -> Dict[str, Any]:
         Dictionary with loaded models: {
             'sentence_transformer_classify': SentenceTransformer,
             'sentence_transformer_search': SentenceTransformer,
-            'trocr': (processor, model),
-            'florence2': (processor, model),
             'paddleocr': PaddleOCR,
-            'llama': (model, tokenizer)  # Optional, lazy-loaded on first use
+            'trocr': (processor, model),  # Optional, lazy-loaded on first use
+            'florence2': (processor, model)  # Optional, lazy-loaded on first use
         }
     """
     global models
@@ -66,41 +64,7 @@ def load_all_models() -> Dict[str, Any]:
         )
         logger.info("✓ Search embedding model loaded")
         
-        # 3. Load TrOCR for handwriting recognition
-        logger.info("Loading TrOCR for handwriting OCR...")
-        trocr_processor = AutoProcessor.from_pretrained(
-            "microsoft/trocr-large-handwritten"
-        )
-        trocr_model = AutoModelForCausalLM.from_pretrained(
-            "microsoft/trocr-large-handwritten"
-        )
-        trocr_model = trocr_model.to(device)
-        models['trocr'] = {
-            'processor': trocr_processor,
-            'model': trocr_model,
-            'device': device
-        }
-        logger.info("✓ TrOCR model loaded")
-        
-        # 4. Load Florence-2 for object detection (signatures, forms)
-        logger.info("Loading Florence-2-base for object detection...")
-        florence_processor = AutoProcessor.from_pretrained(
-            "microsoft/Florence-2-base",
-            trust_remote_code=True
-        )
-        florence_model = AutoModelForCausalLM.from_pretrained(
-            "microsoft/Florence-2-base",
-            trust_remote_code=True
-        )
-        florence_model = florence_model.to(device)
-        models['florence2'] = {
-            'processor': florence_processor,
-            'model': florence_model,
-            'device': device
-        }
-        logger.info("✓ Florence-2 model loaded")
-        
-        # 5. Load PaddleOCR for printed text
+        # 3. Load PaddleOCR for printed text
         logger.info("Loading PaddleOCR for printed text recognition...")
         models['paddleocr'] = PaddleOCR(
             use_angle_cls=True,
@@ -109,16 +73,100 @@ def load_all_models() -> Dict[str, Any]:
         )
         logger.info("✓ PaddleOCR loaded")
         
-        # 6. Llama 3.2 3B is lazy-loaded on first use (large file, ~2GB)
-        models['llama'] = None  # Will be loaded on first query
+        # 4. TrOCR is lazy-loaded on first use (large, ~1.4GB)
+        models['trocr'] = None
+        logger.info("✓ TrOCR marked for lazy loading")
+        
+        # 5. Florence-2 is lazy-loaded on first use (large, ~500MB)
+        models['florence2'] = None
+        logger.info("✓ Florence-2 marked for lazy loading")
+        
+        # 6. Llama 3.2 3B is lazy-loaded on first use (very large, ~2-3GB)
+        models['llama'] = None
         logger.info("✓ Llama 3.2 3B marked for lazy loading")
         
-        logger.info("All models loaded successfully!")
+        logger.info("All core models loaded successfully!")
         return models
         
     except Exception as e:
         logger.error(f"Error loading models: {e}")
         raise
+
+
+def load_trocr_model():
+    """
+    Lazy load TrOCR on first use
+    """
+    global models
+    
+    if models.get('trocr') is not None:
+        logger.info("TrOCR model already loaded")
+        return models['trocr']
+    
+    try:
+        logger.info("Lazy loading TrOCR...")
+        from transformers import AutoProcessor
+        from transformers import VisionEncoderDecoderModel
+        
+        processor = AutoProcessor.from_pretrained(
+            "microsoft/trocr-large-handwritten"
+        )
+        model = VisionEncoderDecoderModel.from_pretrained(
+            "microsoft/trocr-large-handwritten",
+            trust_remote_code=True
+        )
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = model.to(device)
+        
+        models['trocr'] = {
+            'processor': processor,
+            'model': model,
+            'device': device
+        }
+        logger.info("✓ TrOCR loaded")
+        return models['trocr']
+        
+    except Exception as e:
+        logger.error(f"Error loading TrOCR: {e}")
+        return None
+
+
+def load_florence2_model():
+    """
+    Lazy load Florence-2 on first use
+    """
+    global models
+    
+    if models.get('florence2') is not None:
+        logger.info("Florence-2 model already loaded")
+        return models['florence2']
+    
+    try:
+        logger.info("Lazy loading Florence-2...")
+        from transformers import AutoProcessor, AutoModelForCausalLM
+        
+        processor = AutoProcessor.from_pretrained(
+            "microsoft/Florence-2-base",
+            trust_remote_code=True
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            "microsoft/Florence-2-base",
+            trust_remote_code=True
+        )
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = model.to(device)
+        
+        models['florence2'] = {
+            'processor': processor,
+            'model': model,
+            'device': device
+        }
+        logger.info("✓ Florence-2 loaded")
+        return models['florence2']
+        
+    except Exception as e:
+        logger.error(f"Error loading Florence-2: {e}")
+        return None
 
 
 def load_llama_model():
@@ -133,8 +181,6 @@ def load_llama_model():
     
     try:
         logger.info("Lazy loading Llama 3.2 3B GGUF...")
-        # Note: Requires llama-cpp-python
-        # Model should be downloaded and placed at LLAMA_MODEL_PATH
         
         llama_path = os.getenv(
             'LLAMA_MODEL_PATH',
@@ -181,8 +227,7 @@ def models_ready() -> bool:
     required_models = [
         'sentence_transformer_classify',
         'sentence_transformer_search',
-        'trocr',
-        'florence2',
         'paddleocr'
     ]
     return all(key in models and models[key] is not None for key in required_models)
+
