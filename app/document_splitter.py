@@ -26,7 +26,18 @@ def pdf_to_images(pdf_path: str) -> List[Image.Image]:
     """
     logger.info(f"Converting PDF to images: {pdf_path}")
     try:
-        images = convert_from_path(pdf_path, dpi=300)
+        # Explicit poppler path for Windows compatibility
+        poppler_path = r"C:\Users\Ahmad\poppler\poppler-24.08.0\Library\bin"
+        
+        # Try with explicit poppler_path first
+        if os.path.exists(poppler_path):
+            logger.debug(f"Using explicit poppler_path: {poppler_path}")
+            images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
+        else:
+            # Fallback to PATH lookup
+            logger.debug("Using poppler from PATH")
+            images = convert_from_path(pdf_path, dpi=300)
+            
         logger.info(f"✓ Converted {len(images)} pages to images")
         return images
     except Exception as e:
@@ -49,21 +60,42 @@ def extract_text_from_image(image: Image.Image, paddleocr) -> str:
         # Convert PIL image to numpy array
         image_array = np.array(image)
         
-        # Run OCR
-        result = paddleocr.ocr(image_array, cls=True)
+        # Run OCR (without cls parameter - not supported in this PaddleOCR version)
+        result = paddleocr.ocr(image_array)
+        
+        # Log the raw result structure for debugging
+        logger.debug(f"PaddleOCR result type: {type(result)}")
+        if result:
+            logger.debug(f"PaddleOCR result length: {len(result)}")
+            logger.debug(f"First element type: {type(result[0]) if result else None}")
         
         # Extract text from result
         text_lines = []
-        if result:
-            for line in result:
-                if line:
-                    for word_info in line:
-                        if word_info and len(word_info) >= 2:
-                            text_lines.append(word_info[1][0])
         
-        return " ".join(text_lines)
+        if result and len(result) > 0:
+            # PaddleOCR returns [[line1, line2, ...]] or [line1, line2, ...]
+            # Handle both structures
+            ocr_data = result[0] if isinstance(result[0], list) else result
+            
+            for line in ocr_data:
+                if line and isinstance(line, (list, tuple)) and len(line) >= 2:
+                    # Each line is [[x1,y1,x2,y2,x3,y3,x4,y4], (text, confidence)]
+                    text_part = line[1]
+                    if isinstance(text_part, (list, tuple)) and len(text_part) >= 1:
+                        text_lines.append(str(text_part[0]))
+                    elif isinstance(text_part, str):
+                        text_lines.append(text_part)
+        
+        extracted_text = " ".join(text_lines)
+        logger.debug(f"Extracted {len(text_lines)} text lines, {len(extracted_text)} chars total")
+        
+        if not extracted_text.strip():
+            logger.warning("No text extracted from image - possibly blank page or OCR failed")
+        
+        return extracted_text
+        
     except Exception as e:
-        logger.warning(f"Error extracting text from image: {e}")
+        logger.error(f"Error extracting text from image: {e}", exc_info=True)
         return ""
 
 

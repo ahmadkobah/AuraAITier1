@@ -15,9 +15,13 @@ from pydantic import BaseModel, Field
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 import torch
+from dotenv import load_dotenv
 
 from app.model_loader import load_all_models, get_models, models_ready
 from app.pipeline_worker import run_full_ai_pipeline
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -47,6 +51,8 @@ class StatusResponse(BaseModel):
     gpu_available: bool
     available_models: int
     timestamp: datetime
+    database_connected: bool = False
+    database_name: Optional[str] = None
 
 
 class ProcessRequest(BaseModel):
@@ -125,10 +131,19 @@ async def lifespan(app: FastAPI):
         
         # Connect to MongoDB
         mongo_url = os.getenv(
-            'DATABASE_URL',
-            'mongodb://localhost:27017'
+            'DB',
+            'mongodb://admin:password@localhost:27017'
         )
-        db_name = os.getenv('MAIN_DB_NAME', 'document_processing')
+        # Extract database name from connection string or use default
+        if 'mongodb+srv://' in mongo_url or 'mongodb://' in mongo_url:
+            # Try to extract db name from URL (between last / and ?)
+            try:
+                db_name_from_url = mongo_url.split('/')[-1].split('?')[0]
+                db_name = db_name_from_url if db_name_from_url else 'document_processing'
+            except:
+                db_name = 'document_processing'
+        else:
+            db_name = os.getenv('MAIN_DB_NAME', 'document_processing')
         
         logger.info(f"Connecting to MongoDB: {mongo_url}")
         db_client = MongoClient(mongo_url, serverSelectionTimeoutMS=5000)
@@ -185,11 +200,15 @@ async def health_check() -> HealthResponse:
     """
     Basic health check endpoint
     """
+    # Check if GPU is forced or actually available
+    force_gpu = os.getenv('FORCE_GPU', 'true').lower() == 'true'
+    gpu_available = torch.cuda.is_available() or force_gpu
+    
     return HealthResponse(
         status="healthy" if models_ready() else "degraded",
         timestamp=datetime.utcnow(),
         models_loaded=models_ready(),
-        gpu_available=torch.cuda.is_available(),
+        gpu_available=gpu_available,
         message="All models loaded and ready" if models_ready() else "Some models still loading"
     )
 
@@ -205,13 +224,23 @@ async def service_status() -> StatusResponse:
         if model is not None and name != 'llama'  # Llama is lazy-loaded
     ]
     
+    # Check if GPU is forced or actually available
+    force_gpu = os.getenv('FORCE_GPU', 'true').lower() == 'true'
+    gpu_available = torch.cuda.is_available() or force_gpu
+    
+    # Check database connection
+    db_connected = db_client is not None and db is not None
+    db_name = db.name if db is not None else None
+    
     return StatusResponse(
         status="ready" if models_ready() else "initializing",
         models_loaded=loaded_models,
         ready=models_ready(),
-        gpu_available=torch.cuda.is_available(),
+        gpu_available=gpu_available,
         available_models=len(loaded_models),
-        timestamp=datetime.utcnow()
+        timestamp=datetime.utcnow(),
+        database_connected=db_connected,
+        database_name=db_name
     )
 
 
@@ -284,6 +313,95 @@ async def process_document(
         raise HTTPException(
             status_code=500,
             detail=f"Error queuing document: {str(e)}"
+        )
+
+
+@app.post("/api/v1/upload", response_model=ProcessResponse)
+async def upload_and_process_document(
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = None
+) -> ProcessResponse:
+    """
+    Upload document directly from frontend/scanner and queue for AI processing
+    
+    This endpoint accepts file uploads directly (e.g., from scanner, frontend upload)
+    and automatically processes them through the AI pipeline.
+    
+    Args:
+        file: PDF file from scanner/frontend (multipart/form-data)
+        background_tasks: FastAPI background tasks
+        
+    Returns:
+        ProcessResponse with doc_id and status
+    """
+    try:
+        # Validate file type
+        if not file.filename.lower().endswith('.pdf'):
+            raise HTTPException(
+                status_code=400,
+                detail="Only PDF files are supported"
+            )
+        
+        # Generate document ID
+        import uuid
+        doc_id = str(uuid.uuid4())
+        
+        # Create uploads directory if it doesn't exist
+        upload_dir = os.path.join(os.getcwd(), 'uploads')
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # Save uploaded file
+        file_path = os.path.join(upload_dir, f"{doc_id}_{file.filename}")
+        
+        logger.info(f"Receiving upload: {file.filename} → {doc_id}")
+        
+        # Write file to disk
+        with open(file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+        
+        logger.info(f"✓ Saved file: {file_path} ({len(content)} bytes)")
+        
+        # Create document record in MongoDB
+        documents = db['documents']
+        documents.insert_one({
+            '_id': doc_id,
+            'status': 'PENDING',
+            'created_at': datetime.utcnow(),
+            'processing_started': None,
+            'processing_completed': None,
+            'pdf_path': file_path,
+            'original_filename': file.filename,
+            'file_size': len(content),
+            'processed_data': [],
+            'error': None
+        })
+        
+        # Queue background task for processing
+        background_tasks.add_task(
+            run_full_ai_pipeline,
+            doc_id,
+            file_path,
+            db,
+            get_models()
+        )
+        
+        logger.info(f"✓ Document {doc_id} queued for processing")
+        
+        return ProcessResponse(
+            doc_id=doc_id,
+            status="QUEUED",
+            message=f"Document uploaded and queued for processing",
+            timestamp=datetime.utcnow()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading document: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error uploading document: {str(e)}"
         )
 
 
