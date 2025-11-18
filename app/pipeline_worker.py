@@ -8,6 +8,7 @@ import os
 from typing import Dict, Any
 from datetime import datetime
 import torch
+import tempfile
 
 logger = logging.getLogger("pipeline_worker")
 
@@ -42,6 +43,9 @@ async def run_full_ai_pipeline(
         db = db_connection
         documents_collection = db['documents']
         
+        print(f"\n{'='*80}")
+        print(f"🔵 PIPELINE START: doc_id={doc_id}, pdf_file_path={pdf_file_path}")
+        print(f"{'='*80}\n")
         logger.info(f"Starting pipeline for doc_id: {doc_id}")
         
         # Mark as processing
@@ -58,19 +62,31 @@ async def run_full_ai_pipeline(
         logger.info(f"Marked {doc_id} as PROCESSING")
         
         # Step 1: Split PDF and extract text
+        print(f"🔵 STEP 1: About to call split_pdf_and_find_breaks()")
         logger.info("Step 1: Splitting PDF...")
         from app.document_splitter import (
             split_pdf_and_find_breaks,
-            classify_text,
-            find_signature
+            classify_text
         )
+        from app.signature_ocr import ocr_signature
+        from app.yolo_signature import detect_signature_boxes as detect_signature_boxes_yolo
         
+        print(f"🔵 CALLING: split_pdf_and_find_breaks(pdf_file_path={pdf_file_path}, similarity_threshold=0.5)")
         logical_documents = split_pdf_and_find_breaks(
             pdf_file_path,
             models,
             similarity_threshold=0.5
         )
+        print(f"🔵 RETURNED: split_pdf_and_find_breaks returned {len(logical_documents)} logical documents")
         logger.info(f"✓ Split into {len(logical_documents)} logical documents")
+
+        # Pre-render all pages once for downstream steps (signature OCR, etc.)
+        from pdf2image import convert_from_path
+        poppler_path = r"C:\Users\Ahmad\poppler\poppler-24.08.0\Library\bin"
+        if os.path.exists(poppler_path):
+            images = convert_from_path(pdf_file_path, dpi=300, poppler_path=poppler_path)
+        else:
+            images = convert_from_path(pdf_file_path, dpi=300)
         
         # Step 2: Process each logical document
         processed_data = []
@@ -87,15 +103,39 @@ async def run_full_ai_pipeline(
             
             # 2b. Embedding already computed in document_splitter
             
-            # 2c. Detect signatures (use first page image for now)
-            logger.info("  Detecting signatures...")
-            from pdf2image import convert_from_path
-            images = convert_from_path(pdf_file_path, dpi=300)
-            first_page_in_doc = logical_doc['start_page']
-            
-            signature_info = {}
-            if first_page_in_doc < len(images):
-                signature_info = find_signature(images[first_page_in_doc], models)
+            # 2c. Detect signatures with YOLOv8n, then OCR with TrOCR Large on cropped region
+            logger.info("  Detecting signature region(s) via YOLOv8n and running TrOCR across pages in doc range...")
+            start_page = logical_doc['start_page']
+            end_page = logical_doc['end_page']
+
+            signature_found = False
+            signature_text = ""
+            signature_box = None
+            signature_boxes = []
+            signature_confidence = 0.0
+
+            for p in range(start_page, min(end_page + 1, len(images))):
+                img = images[p]
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp_path = tmp.name
+                try:
+                    img.save(tmp_path)
+                    # Use YOLOv8n to detect boxes on this page image
+                    yolo_boxes = detect_signature_boxes_yolo(img, models)
+                    # Run TrOCR on detected box (or fallback inside if none)
+                    sig_result = ocr_signature(tmp_path, boxes=yolo_boxes)
+                    if sig_result.get('found'):
+                        signature_found = True
+                        signature_text = sig_result.get('text', '')
+                        signature_box = sig_result.get('box')
+                        signature_boxes = sig_result.get('boxes', [])
+                        signature_confidence = float(sig_result.get('confidence', 0.75))
+                        break  # stop at first positive page
+                finally:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
             
             # 2d. Generate summary using Llama
             logger.info("  Generating summary...")
@@ -109,8 +149,12 @@ async def run_full_ai_pipeline(
                 'text': doc_text[:2000] + "..." if len(doc_text) > 2000 else doc_text,
                 'embedding': doc_embedding,
                 'classification': classification,
-                'signature_detected': signature_info['detected'],
-                'signature_confidence': signature_info['confidence'],
+                # Signature via PaddleOCR→YOLOv8n detect→TrOCR Large
+                'signature_detected': signature_found,
+                'signature_confidence': signature_confidence,
+                'signature_text': signature_text,
+                'signature_box': signature_box,
+                'signature_boxes': signature_boxes,
                 'summary': summary,
                 'processed_at': datetime.utcnow().isoformat()
             }

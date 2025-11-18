@@ -42,8 +42,8 @@ def load_all_models() -> Dict[str, Any]:
             'sentence_transformer_classify': SentenceTransformer,
             'sentence_transformer_search': SentenceTransformer,
             'paddleocr': PaddleOCR,
-            'trocr': (processor, model),  # Optional, lazy-loaded on first use
-            'florence2': (processor, model)  # Optional, lazy-loaded on first use
+            'trocr': (processor, model),
+            'yolo': YOLO model for signature detection
         }
     """
     global models
@@ -58,27 +58,32 @@ def load_all_models() -> Dict[str, Any]:
     try:
         # 1. Load SentenceTransformer for classification (zero-shot via embeddings)
         logger.info("Loading all-MiniLM-L12-v2 for classification...")
+        classify_model_path = os.path.join('models', 'sentence-transformers', 'models--sentence-transformers--all-MiniLM-L12-v2', 'snapshots', 'c004d8e3e901237d8fa7e9fff12774962e391ce5')
         models['sentence_transformer_classify'] = SentenceTransformer(
-            'sentence-transformers/all-MiniLM-L12-v2',
+            classify_model_path,
             device=device
         )
-        logger.info("✓ Classification model loaded")
+        logger.info("✓ Classification model loaded from local path")
         
         # 2. Load SentenceTransformer for search embeddings
         logger.info("Loading all-MiniLM-L6-v2 for search embeddings...")
+        search_model_path = os.path.join('models', 'sentence-transformers', 'models--sentence-transformers--all-MiniLM-L6-v2', 'snapshots', 'c9745ed1d9f207416be6d2e6f8de32d1f16199bf')
         models['sentence_transformer_search'] = SentenceTransformer(
-            'sentence-transformers/all-MiniLM-L6-v2',
+            search_model_path,
             device=device
         )
-        logger.info("✓ Search embedding model loaded")
+        logger.info("✓ Search embedding model loaded from local path")
         
         # 3. Load PaddleOCR for printed text
         logger.info("Loading PaddleOCR for printed text recognition...")
+        # PaddleOCR manages its own model cache (C:\Users\Ahmad\.paddlex\official_models)
+        # Models are already downloaded and cached
         models['paddleocr'] = PaddleOCR(
-            use_angle_cls=True,
-            lang='en'
+            use_textline_orientation=True,  # Replaces deprecated use_angle_cls
+            lang='en',
+            ocr_version='PP-OCRv5'  # Use latest OCR model
         )
-        logger.info("✓ PaddleOCR loaded")
+        logger.info("✓ PaddleOCR loaded (using system cache)")
         
         # 4. Load TrOCR for handwritten text (preload on startup)
         logger.info("Loading TrOCR for handwritten text recognition...")
@@ -88,9 +93,13 @@ def load_all_models() -> Dict[str, Any]:
         else:
             logger.warning("⚠ TrOCR failed to load - handwritten text extraction unavailable")
         
-        # 5. Florence-2 is lazy-loaded on first use (large, ~500MB)
-        models['florence2'] = None
-        logger.info("✓ Florence-2 marked for lazy loading")
+        # 5. Load YOLOv8n for signature detection (preload on startup)
+        logger.info("Loading YOLOv8n for signature detection...")
+        models['yolo'] = load_yolo_model()
+        if models['yolo']:
+            logger.info("✓ YOLOv8n loaded")
+        else:
+            logger.warning("⚠ YOLOv8n failed to load - signature detection unavailable")
         
         # 6. Load Llama 3.2 3B for Q&A (preload on startup if available)
         logger.info("Loading Llama 3.2 3B for question answering...")
@@ -119,26 +128,37 @@ def load_trocr_model():
         return models['trocr']
     
     try:
-        logger.info("Lazy loading TrOCR...")
-        from transformers import AutoProcessor
-        from transformers import VisionEncoderDecoderModel
-        
-        processor = AutoProcessor.from_pretrained(
-            "microsoft/trocr-large-handwritten"
+        logger.info("Lazy loading TrOCR (handwriting) model...")
+        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+
+        # Prefer env path; else default to HF hub id
+        local_official_path = os.path.join('models', 'trocr', 'official')
+        trocr_source = os.getenv('TROCR_MODEL_PATH') or (local_official_path if os.path.isdir(local_official_path) else 'microsoft/trocr-large-handwritten')
+
+        processor = TrOCRProcessor.from_pretrained(
+            trocr_source,
+            local_files_only=os.path.isdir(trocr_source)
         )
         model = VisionEncoderDecoderModel.from_pretrained(
-            "microsoft/trocr-large-handwritten",
-            trust_remote_code=True
+            trocr_source,
+            trust_remote_code=True,
+            local_files_only=os.path.isdir(trocr_source)
         )
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model = model.to(device)
-        
+
+        # Ensure decoder config tokens
+        if getattr(model.config, 'decoder_start_token_id', None) is None and hasattr(processor, 'tokenizer'):
+            model.config.decoder_start_token_id = getattr(processor.tokenizer, 'bos_token_id', None)
+        if getattr(model.config, 'pad_token_id', None) is None and hasattr(processor, 'tokenizer'):
+            model.config.pad_token_id = getattr(processor.tokenizer, 'pad_token_id', 0)
+
         models['trocr'] = {
             'processor': processor,
             'model': model,
             'device': device
         }
-        logger.info("✓ TrOCR loaded")
+        logger.info(f"✓ TrOCR loaded from: {trocr_source}")
         return models['trocr']
         
     except Exception as e:
@@ -146,41 +166,37 @@ def load_trocr_model():
         return None
 
 
-def load_florence2_model():
+def load_yolo_model():
     """
-    Lazy load Florence-2 on first use
+    Load YOLOv8n for signature detection
+    Uses pre-trained model or fine-tuned signature model if available
     """
     global models
     
-    if models.get('florence2') is not None:
-        logger.info("Florence-2 model already loaded")
-        return models['florence2']
+    if models.get('yolo') is not None:
+        logger.info("YOLOv8n model already loaded")
+        return models['yolo']
     
     try:
-        logger.info("Lazy loading Florence-2...")
-        from transformers import AutoProcessor, AutoModelForCausalLM
+        logger.info("Loading YOLOv8n for signature detection...")
+        from ultralytics import YOLO
         
-        processor = AutoProcessor.from_pretrained(
-            "microsoft/Florence-2-base",
-            trust_remote_code=True
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            "microsoft/Florence-2-base",
-            trust_remote_code=True
-        )
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = model.to(device)
+        # Check for custom signature model, else use YOLOv8n default
+        custom_model_path = os.path.join('models', 'yolo', 'signature_detector.pt')
         
-        models['florence2'] = {
-            'processor': processor,
-            'model': model,
-            'device': device
-        }
-        logger.info("✓ Florence-2 loaded")
-        return models['florence2']
+        if os.path.exists(custom_model_path):
+            logger.info(f"Loading custom signature model: {custom_model_path}")
+            model = YOLO(custom_model_path)
+        else:
+            logger.info("Loading default YOLOv8n model")
+            model = YOLO('yolov8n.pt')  # Will auto-download on first use
+        
+        models['yolo'] = model
+        logger.info("✓ YOLOv8n loaded")
+        return models['yolo']
         
     except Exception as e:
-        logger.error(f"Error loading Florence-2: {e}")
+        logger.error(f"Error loading YOLOv8n: {e}")
         return None
 
 

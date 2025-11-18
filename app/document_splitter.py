@@ -56,46 +56,124 @@ def extract_text_from_image(image: Image.Image, paddleocr) -> str:
     Returns:
         Extracted text
     """
+    print(f"\n🟡 ENTERED: extract_text_from_image()")
+    print(f"🟡 PARAMS: image={type(image).__name__} size={image.size}, paddleocr={type(paddleocr).__name__}")
     try:
         # Convert PIL image to numpy array
         image_array = np.array(image)
+        print(f"[OCR DEBUG] Image array shape: {image_array.shape}, dtype: {image_array.dtype}")
+        logger.info(f"Image array shape: {image_array.shape}, dtype: {image_array.dtype}")
         
-        # Run OCR (without cls parameter - not supported in this PaddleOCR version)
-        result = paddleocr.ocr(image_array)
+        # Run OCR
+        print(f"🟡 BEFORE OCR: About to call paddleocr.ocr(image_array)")
+        print(f"🟡 OCR INPUT: image_array shape={image_array.shape}, dtype={image_array.dtype}")
+        print("[OCR DEBUG] Calling PaddleOCR.ocr()...")
+        logger.info("Calling PaddleOCR.ocr()...")
+        try:
+            print(f"🟡 CALLING: paddleocr.ocr()...")
+            result = paddleocr.ocr(image_array)
+            print(f"✅ OCR RETURNED: Call completed without exception")
+            print(f"[OCR DEBUG] ✓ OCR completed. Result type: {type(result)}, is None: {result is None}")
+            
+            # IMMEDIATE RESULT INSPECTION
+            print(f"🔍 RESULT INSPECTION:")
+            print(f"   - result type: {type(result)}")
+            print(f"   - result is None: {result is None}")
+            print(f"   - result value: {result}")
+            if result:
+                print(f"   - len(result): {len(result)}")
+                if len(result) > 0:
+                    print(f"   - result[0] type: {type(result[0])}")
+                    print(f"   - result[0] is None: {result[0] is None}")
+                    print(f"   - result[0] value: {result[0]}")
+                    if result[0] and hasattr(result[0], '__len__'):
+                        print(f"   - len(result[0]): {len(result[0])}")
+            
+            logger.info(f"✓ OCR call completed without exception")
+        except Exception as ocr_error:
+            logger.error(f"❌ OCR call raised exception: {ocr_error}", exc_info=True)
+            return ""
         
-        # Log the raw result structure for debugging
-        logger.debug(f"PaddleOCR result type: {type(result)}")
+        # DETAILED LOGGING - Log the complete raw result structure
+        logger.info("=" * 80)
+        logger.info("PADDLEOCR RESULT DEBUG:")
+        logger.info(f"Result type: {type(result)}")
+        logger.info(f"Result is None: {result is None}")
+        logger.info(f"Result value (first 500 chars): {str(result)[:500]}")
+        
         if result:
-            logger.debug(f"PaddleOCR result length: {len(result)}")
-            logger.debug(f"First element type: {type(result[0]) if result else None}")
+            logger.info(f"Result length: {len(result)}")
+            logger.info(f"Result[0] type: {type(result[0]) if len(result) > 0 else 'N/A'}")
+            
+            if len(result) > 0 and result[0]:
+                logger.info(f"Result[0] is None: {result[0] is None}")
+                if result[0] is not None:
+                    # Check if it's a dict or list
+                    if isinstance(result[0], dict):
+                        logger.info(f"Result[0] is a DICT with keys: {list(result[0].keys())}")
+                        logger.info(f"Result[0] content: {result[0]}")
+                    elif isinstance(result[0], list):
+                        logger.info(f"Result[0] is a LIST with length: {len(result[0])}")
+                        # Log first 3 detections in detail
+                        if len(result[0]) > 0:
+                            logger.info("First 3 OCR detections:")
+                            for i, detection in enumerate(result[0][:3]):
+                                logger.info(f"  Detection {i}: {detection}")
+                        else:
+                            logger.warning("Result[0] is EMPTY list!")
+                    else:
+                        logger.warning(f"Result[0] has unexpected type: {type(result[0])}")
+                        logger.info(f"Result[0] value: {result[0]}")
+            else:
+                logger.warning("Result[0] is None or empty!")
+        else:
+            logger.warning("Result is None or empty!")
+        
+        logger.info("=" * 80)
         
         # Extract text from result
         text_lines = []
         
-        if result and len(result) > 0:
-            # PaddleOCR returns [[line1, line2, ...]] or [line1, line2, ...]
-            # Handle both structures
-            ocr_data = result[0] if isinstance(result[0], list) else result
+        if result and len(result) > 0 and result[0]:
+            ocr_data = result[0]
             
-            for line in ocr_data:
-                if line and isinstance(line, (list, tuple)) and len(line) >= 2:
-                    # Each line is [[x1,y1,x2,y2,x3,y3,x4,y4], (text, confidence)]
-                    text_part = line[1]
-                    if isinstance(text_part, (list, tuple)) and len(text_part) >= 1:
-                        text_lines.append(str(text_part[0]))
-                    elif isinstance(text_part, str):
-                        text_lines.append(text_part)
+            # PaddleOCR 3.3.2+ returns OCRResult dict, not list
+            if isinstance(ocr_data, dict) and 'rec_texts' in ocr_data:
+                print(f"✅ NEW FORMAT: Found 'rec_texts' key with {len(ocr_data['rec_texts'])} texts")
+                text_lines = ocr_data['rec_texts']
+                logger.info(f"Extracted {len(text_lines)} text lines from OCRResult dict")
+            else:
+                # Fallback: old format (list of detections)
+                logger.info(f"Processing {len(ocr_data)} OCR detections (old format)...")
+                
+                for idx, line in enumerate(ocr_data):
+                    if line and isinstance(line, (list, tuple)) and len(line) >= 2:
+                        coords = line[0]
+                        text_part = line[1]
+                        
+                        logger.debug(f"Line {idx}: coords={coords}, text_part={text_part}")
+                        
+                        if isinstance(text_part, (list, tuple)) and len(text_part) >= 1:
+                            text = str(text_part[0])
+                            confidence = float(text_part[1]) if len(text_part) > 1 else 0.0
+                            text_lines.append(text)
+                            logger.debug(f"  → Extracted: '{text}' (confidence: {confidence:.3f})")
+                        elif isinstance(text_part, str):
+                            text_lines.append(text_part)
+                            logger.debug(f"  → Extracted: '{text_part}'")
         
         extracted_text = " ".join(text_lines)
-        logger.debug(f"Extracted {len(text_lines)} text lines, {len(extracted_text)} chars total")
+        logger.info(f"FINAL: Extracted {len(text_lines)} text lines, {len(extracted_text)} chars total")
         
         if not extracted_text.strip():
-            logger.warning("No text extracted from image - possibly blank page or OCR failed")
+            logger.error("❌ NO TEXT EXTRACTED! OCR returned empty result")
+        else:
+            logger.info(f"✓ Text preview: {extracted_text[:100]}...")
         
         return extracted_text
         
     except Exception as e:
-        logger.error(f"Error extracting text from image: {e}", exc_info=True)
+        logger.error(f"❌ EXCEPTION in extract_text_from_image: {e}", exc_info=True)
         return ""
 
 
@@ -134,12 +212,23 @@ def split_pdf_and_find_breaks(
             ...
         ]
     """
+    print(f"\n🟢 ENTERED: split_pdf_and_find_breaks(pdf_path={pdf_path})")
     logger.info(f"Splitting PDF with similarity threshold: {similarity_threshold}")
     
     # Convert PDF to images
+    print(f"🟢 CALLING: pdf_to_images({pdf_path})")
     images = pdf_to_images(pdf_path)
+    print(f"🟢 RETURNED: pdf_to_images returned {len(images)} images")
+    
+    print(f"🟢 GETTING: models['paddleocr'] - type={type(models.get('paddleocr'))}")
     paddleocr = models['paddleocr']
     sentence_transformer = models['sentence_transformer_search']
+    
+    if paddleocr is None:
+        print(f"❌ ERROR: paddleocr is None! Cannot extract text.")
+        raise ValueError("PaddleOCR model not loaded in models dict")
+    else:
+        print(f"✅ PaddleOCR instance retrieved successfully: {paddleocr}")
     
     # Extract text and embeddings for each page
     page_texts = []
@@ -147,7 +236,10 @@ def split_pdf_and_find_breaks(
     
     logger.info(f"Extracting text from {len(images)} pages...")
     for idx, image in enumerate(images):
+        print(f"\n🟢 PAGE {idx+1}/{len(images)}: Calling extract_text_from_image(image_size={image.size}, paddleocr_type={type(paddleocr).__name__})")
         text = extract_text_from_image(image, paddleocr)
+        print(f"🟢 PAGE {idx+1}: extract_text_from_image returned {len(text)} characters")
+        print(f"🟢 PAGE {idx+1}: Text preview: {text[:100] if text else '(empty)'}")
         page_texts.append(text)
         
         if text.strip():
@@ -283,70 +375,8 @@ def classify_text(
         }
 
 
-def find_signature(image: Image.Image, models: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Detect signatures/handwritten marks in document using Florence-2
-    
-    Args:
-        image: PIL Image object
-        models: Dictionary with loaded models
-        
-    Returns:
-        {
-            'detected': True/False,
-            'confidence': 0.85,
-            'description': 'Handwritten signature in bottom-right'
-        }
-    """
-    try:
-        florence_processor = models['florence2']['processor']
-        florence_model = models['florence2']['model']
-        device = models['florence2']['device']
-        
-        # Prepare image
-        inputs = florence_processor(
-            text="<OD>",  # Object Detection task
-            images=image,
-            return_tensors="pt"
-        )
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        
-        # Run model
-        with torch.no_grad():
-            outputs = florence_model.generate(
-                **inputs,
-                max_new_tokens=1024,
-                early_stopping=False,
-                do_sample=False,
-                num_beams=3
-            )
-        
-        # Decode results
-        result_text = florence_processor.batch_decode(
-            outputs,
-            skip_special_tokens=False
-        )[0]
-        
-        # Check if signature-like objects detected
-        signature_keywords = [
-            'signature', 'sign', 'handwriting', 'mark', 'initial',
-            'autograph', 'scrawl', 'writing'
-        ]
-        
-        detected = any(
-            keyword in result_text.lower() for keyword in signature_keywords
-        )
-        
-        return {
-            'detected': detected,
-            'confidence': 0.75 if detected else 0.0,
-            'description': result_text if detected else 'No signature detected'
-        }
-        
-    except Exception as e:
-        logger.warning(f"Error detecting signature: {e}")
-        return {
-            'detected': False,
-            'confidence': 0.0,
-            'description': 'Detection failed'
-        }
+# DEPRECATED: Legacy Florence-2 signature detection (not used in current pipeline)
+# Signature detection now handled by YOLOv8n in pipeline_worker.py
+# def find_signature(image: Image.Image, models: Dict[str, Any]) -> Dict[str, Any]:
+#     ...
+#     (code removed - see git history if needed)

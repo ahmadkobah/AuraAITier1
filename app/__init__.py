@@ -1,3 +1,4 @@
+"""App package initializer"""
 """
 AI Service Tier 1 - Package initialization
 Lightweight document processing service with PaddleOCR, TrOCR, and embeddings

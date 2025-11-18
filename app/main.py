@@ -11,6 +11,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
@@ -86,7 +87,7 @@ class SearchResult(BaseModel):
 
 class QueryRequest(BaseModel):
     """Question answering request"""
-    doc_id: str = Field(..., description="Document to query")
+    doc_id: Optional[str] = Field(None, description="Document to query (optional for summarize)")
     question: str = Field(..., description="Question to answer")
     context_size: int = Field(2000, description="Context window for answer generation")
 
@@ -188,6 +189,18 @@ app = FastAPI(
     description="Lightweight document processing, classification, search, and Q&A",
     version="1.0.0",
     lifespan=lifespan
+)
+
+# ========================
+# CORS Configuration
+# ========================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -469,8 +482,12 @@ async def vector_search(request: SearchRequest) -> Dict[str, Any]:
             # Fallback: manual similarity search
             logger.info(f"Atlas search unavailable, using fallback: {e}")
             
+            # Only search in completed documents
+            search_filter['status'] = 'COMPLETE'
             all_docs = list(documents.find(search_filter))
             results = []
+            
+            logger.info(f"Searching through {len(all_docs)} completed documents")
             
             for doc in all_docs:
                 for processed_doc in doc.get('processed_data', []):
@@ -528,6 +545,7 @@ async def vector_search(request: SearchRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/v1/query", response_model=QueryResponse)
+@app.post("/api/v1/qa", response_model=QueryResponse)  # Alias for backwards compatibility
 async def query_document(request: QueryRequest) -> QueryResponse:
     """
     Question-answering over a document using Llama 3.2 3B
@@ -539,6 +557,13 @@ async def query_document(request: QueryRequest) -> QueryResponse:
         QueryResponse with answer from Llama
     """
     try:
+        # Validate doc_id is provided
+        if not request.doc_id:
+            raise HTTPException(
+                status_code=400,
+                detail="doc_id is required"
+            )
+        
         models = get_models()
         
         # Get document from MongoDB
@@ -614,6 +639,71 @@ Answer:"""
         raise HTTPException(
             status_code=500,
             detail=f"Query error: {str(e)}"
+        )
+
+
+@app.post("/api/v1/summarize")
+async def summarize_document(request: QueryRequest) -> Dict[str, Any]:
+    """
+    Generate summary for a document (alias for query with summary question)
+    
+    Args:
+        request: QueryRequest with doc_id (question optional)
+        
+    Returns:
+        Summary response
+    """
+    try:
+        # Get document from MongoDB
+        documents = db['documents']
+        doc = documents.find_one({'_id': request.doc_id})
+        
+        if not doc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document {request.doc_id} not found"
+            )
+        
+        # Check if document has been processed and has summary
+        if doc.get('status') == 'COMPLETE' and doc.get('processed_data'):
+            # Return existing summary from processing
+            summaries = []
+            for processed_doc in doc['processed_data']:
+                if processed_doc.get('summary'):
+                    summaries.append(processed_doc['summary'])
+            
+            if summaries:
+                combined_summary = " ".join(summaries)
+                return {
+                    'doc_id': request.doc_id,
+                    'summary': combined_summary,
+                    'timestamp': datetime.utcnow().isoformat()
+                }
+        
+        # Fallback: Generate new summary using Q&A endpoint
+        summary_question = request.question or "Please summarize this document in 2-3 sentences."
+        
+        query_request = QueryRequest(
+            doc_id=request.doc_id,
+            question=summary_question,
+            context_size=request.context_size
+        )
+        
+        response = await query_document(query_request)
+        
+        return {
+            'doc_id': request.doc_id,
+            'summary': response.answer,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating summary: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Summary error: {str(e)}"
         )
 
 
