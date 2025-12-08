@@ -1,0 +1,816 @@
+"""
+Pipeline Worker - Main background task for document processing
+Orchestrates full AI pipeline: split → classify → embed → detect signatures → summarize
+
+CRASH PREVENTION:
+-----------------
+This module implements comprehensive error handling to prevent crashes:
+- All MongoDB operations wrapped in try-except
+- File operations with cleanup in finally blocks
+- GPU memory management with OOM recovery
+- Input validation before processing
+- Graceful degradation when services unavailable
+"""
+
+import logging
+import os
+import asyncio
+import requests
+from typing import Dict, Any, Optional, Union
+from datetime import datetime
+import torch
+import tempfile
+from bson import ObjectId
+from pymongo.errors import ConnectionFailure, OperationFailure, ServerSelectionTimeoutError
+from app.api.config_endpoints import get_runtime_config
+from app.models.loader import _MAX_GPU_MEMORY_MB
+
+logger = logging.getLogger("pipeline_worker")
+
+
+def is_llamafile_healthy() -> bool:
+    """
+    Check if Llamafile server is responding.
+    
+    Returns:
+        bool: True if LLaMA is healthy, False otherwise
+        
+    Note:
+        Catches all exceptions to prevent crashes if LLaMA is down.
+        Logs error only if needed for debugging.
+    """
+    try:
+        from app.api.config_endpoints import get_runtime_config
+        config = get_runtime_config()
+        health_timeout = config.get('LLAMAFILE_HEALTH_TIMEOUT', 2)
+        response = requests.get('http://127.0.0.1:8080/health', timeout=health_timeout)
+        return response.status_code == 200
+    except requests.exceptions.RequestException as e:
+        # LLaMA not available - this is expected if not started
+        logger.debug(f"LLaMA health check failed: {e}")
+        return False
+    except Exception as e:
+        # Unexpected error - log it
+        logger.warning(f"Unexpected error checking LLaMA health: {e}")
+        return False
+
+
+async def run_full_ai_pipeline(
+    doc_id: Union[str, ObjectId],
+    pdf_file_path: str,
+    db_connection,
+    models: Dict[str, Any],
+    config_override: Optional[Dict[str, Any]] = None
+) -> None:
+    """
+    Full AI pipeline for document processing
+    
+    Workflow:
+    1. Mark document as PROCESSING in MongoDB
+    2. Split PDF into logical documents
+    3. For each logical document:
+       a. Classify document type
+       b. Generate embedding for search
+       c. Detect signatures/forms
+       d. Generate summary using Llama (if available)
+    4. Save all results to MongoDB processed_data array
+    5. Mark document as COMPLETE
+    
+    Args:
+        doc_id: Document ID in MongoDB
+        pdf_file_path: Path to uploaded PDF
+        db_connection: MongoDB client
+        models: Loaded models dictionary
+        config_override: Optional tier/company-specific configuration overrides
+        
+    Config Priority:
+        1. config_override (highest) - Tier/company settings from Control Panel
+        2. RUNTIME_CONFIG (medium) - AI Service configuration
+        3. Environment defaults (lowest) - .env file settings
+    """
+    # ========================
+    # Input Validation
+    # ========================
+    # Validate required models are loaded
+    required_models = ['paddleocr', 'sentence_transformer_search']
+    missing_models = [m for m in required_models if not models.get(m)]
+    if missing_models:
+        error_msg = f"Required models not loaded: {', '.join(missing_models)}"
+        logger.error(error_msg)
+        # Update document status in DB before raising
+        try:
+            db_connection['documents'].update_one(
+                {'_id': ObjectId(doc_id) if isinstance(doc_id, str) else doc_id},
+                {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
+            )
+        except Exception as db_err:
+            logger.error(f"Failed to update document status: {db_err}")
+        raise ValueError(error_msg)
+    
+    # Validate file exists and is readable
+    if not os.path.exists(pdf_file_path):
+        error_msg = f"PDF file not found: {pdf_file_path}"
+        logger.error(error_msg)
+        try:
+            db_connection['documents'].update_one(
+                {'_id': ObjectId(doc_id) if isinstance(doc_id, str) else doc_id},
+                {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
+            )
+        except Exception as db_err:
+            logger.error(f"Failed to update document status: {db_err}")
+        raise FileNotFoundError(error_msg)
+    
+    # Validate file size (prevent OOM on huge files)
+    try:
+        file_size_mb = os.path.getsize(pdf_file_path) / (1024 * 1024)
+        max_size_mb = int(os.getenv('MAX_PDF_SIZE_MB', '200'))
+        if file_size_mb > max_size_mb:
+            error_msg = f"PDF too large: {file_size_mb:.1f}MB (max: {max_size_mb}MB)"
+            logger.error(error_msg)
+            try:
+                db_connection['documents'].update_one(
+                    {'_id': ObjectId(doc_id) if isinstance(doc_id, str) else doc_id},
+                    {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
+                )
+            except Exception as db_err:
+                logger.error(f"Failed to update document status: {db_err}")
+            raise ValueError(error_msg)
+    except OSError as e:
+        logger.error(f"Failed to check file size: {e}")
+        # Continue anyway - not critical
+    
+    # Get runtime configuration (can be updated by Control Panel)
+    config = get_runtime_config()
+    
+    # Merge config_override with runtime config (override takes priority)
+    if config_override:
+        logger.info(f"Applying config override: {list(config_override.keys())}")
+        config = {**config, **config_override}
+    
+    # Pipeline step toggles (all 10 steps - ON by default)
+    ENABLE_PDF_SPLITTING = config.get('ENABLE_PDF_SPLITTING', True)
+    ENABLE_OCR_VALIDATION = config.get('ENABLE_OCR_VALIDATION', True)
+    ENABLE_CLASSIFICATION = config.get('ENABLE_CLASSIFICATION', True)
+    ENABLE_SIGNATURE_DETECTION = config.get('ENABLE_SIGNATURE_DETECTION', True)
+    ENABLE_SIGNATURE_VALIDATION = config.get('ENABLE_SIGNATURE_VALIDATION', True)
+    ENABLE_STRUCTURED_EXTRACTION = config.get('ENABLE_STRUCTURED_EXTRACTION', True)
+    ENABLE_ENTITY_EXTRACTION = config.get('ENABLE_ENTITY_EXTRACTION', True)
+    ENABLE_SUMMARY = config.get('ENABLE_SUMMARY', True)
+    ENABLE_EMBEDDING_GENERATION = config.get('ENABLE_EMBEDDING_GENERATION', True)
+    ENABLE_MONGODB_STORAGE = config.get('ENABLE_MONGODB_STORAGE', True)
+    
+    # ========================
+    # Database Connection Setup
+    # ========================
+    try:
+        db = db_connection
+        documents_collection = db['documents']
+        
+        print("\\n" + "="*80)
+        print(f"🔵 PIPELINE START: doc_id={doc_id}, pdf_file_path={pdf_file_path}")
+        print("="*80 + "\\n")
+        logger.info(f"Starting pipeline for doc_id: {doc_id}")
+        
+        # Convert doc_id to ObjectId if it's a string
+        original_doc_id = doc_id
+        if isinstance(doc_id, str):
+            try:
+                doc_id = ObjectId(doc_id)
+            except Exception as e:
+                error_msg = f"Invalid document ID format: {doc_id}"
+                logger.error(f"{error_msg}: {e}")
+                raise ValueError(error_msg)
+        
+        # ========================
+        # Mark Document as Processing
+        # ========================
+        try:
+            result = documents_collection.update_one(
+                {'_id': doc_id},
+                {
+                    '$set': {
+                        'status': 'PROCESSING',
+                        'processing_started': datetime.utcnow(),
+                        'processed_data': [],
+                        'error': None  # Clear any previous errors
+                    }
+                },
+                upsert=False  # Don't create if doesn't exist
+            )
+            
+            if result.matched_count == 0:
+                error_msg = f"Document {doc_id} not found in database"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+                
+            logger.info(f"✓ Marked {doc_id} as PROCESSING")
+            
+        except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+            error_msg = f"MongoDB connection failed: {e}"
+            logger.error(error_msg)
+            raise ConnectionError(error_msg)
+        except OperationFailure as e:
+            error_msg = f"MongoDB operation failed: {e}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        # Step 1: Split PDF and extract text
+        print(f"🔵 STEP 1: PDF Document Splitting (ENABLE_PDF_SPLITTING={ENABLE_PDF_SPLITTING})")
+        logger.info("Step 1: Splitting PDF...")
+        from app.core.classifier import (
+            split_pdf_and_find_breaks,
+            classify_text
+        )
+        from app.services.signature_ocr import ocr_signature
+        from app.services.signature_detection import detect_signature_boxes as detect_signature_boxes_yolo
+        
+        if ENABLE_PDF_SPLITTING:
+            # Read similarity threshold from Control Panel config
+            similarity_threshold = config.get('SIMILARITY_THRESHOLD', 0.5)
+            print(f"🔵 CALLING: split_pdf_and_find_breaks(pdf_file_path={pdf_file_path}, similarity_threshold={similarity_threshold})")
+            logical_documents = split_pdf_and_find_breaks(
+                pdf_file_path,
+                models,
+                similarity_threshold=similarity_threshold
+            )
+            print(f"🔵 RETURNED: split_pdf_and_find_breaks returned {len(logical_documents)} logical documents")
+            logger.info(f"✓ Split into {len(logical_documents)} logical documents")
+        else:
+            # Treat entire PDF as single document
+            logger.info("⏸️ PDF splitting disabled - treating as single document")
+            from app.core.classifier import extract_text_basic
+            full_text = extract_text_basic(pdf_file_path, models)
+            logical_documents = [{
+                'doc_num': 1,
+                'start_page': 0,
+                'end_page': 0,
+                'page_count': 1,
+                'text': full_text,
+                'embedding': None
+            }]
+
+        # ========================
+        # Convert PDF to Images with Safety Checks
+        # ========================
+        from pdf2image import convert_from_path
+        poppler_path = os.getenv('POPPLER_PATH', r"C:\Users\Ahmad\poppler\poppler-24.08.0\Library\bin")
+        
+        # Memory management: Limit pages and DPI to prevent OOM
+        max_pages = int(os.getenv('MAX_PAGES_PER_DOCUMENT', '50'))
+        dpi = int(os.getenv('PDF_CONVERSION_DPI', '200'))
+        
+        images = None
+        try:
+            # Check if Poppler is available
+            if os.path.exists(poppler_path):
+                logger.info(f"Using Poppler from: {poppler_path}")
+                images = convert_from_path(
+                    pdf_file_path, 
+                    dpi=dpi,
+                    last_page=max_pages,
+                    poppler_path=poppler_path
+                )
+            else:
+                # Try system Poppler (might be in PATH)
+                logger.warning(f"Poppler path not found: {poppler_path}, trying system PATH")
+                images = convert_from_path(
+                    pdf_file_path, 
+                    dpi=dpi, 
+                    last_page=max_pages
+                )
+            
+            if not images:
+                raise ValueError("PDF conversion produced no images")
+                
+            logger.info(f"✓ Converted PDF to {len(images)} images (DPI: {dpi}, Max pages: {max_pages})")
+            
+        except FileNotFoundError as e:
+            error_msg = (
+                f"Poppler not found: {e}. "
+                f"Please install Poppler from: https://github.com/oschwartz10612/poppler-windows/releases "
+                f"and set POPPLER_PATH environment variable."
+            )
+            logger.error(error_msg)
+            # Update database with helpful error message
+            try:
+                documents_collection.update_one(
+                    {'_id': doc_id},
+                    {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
+                )
+            except Exception as db_err:
+                logger.error(f"Failed to update document status: {db_err}")
+            raise FileNotFoundError(error_msg)
+            
+        except MemoryError as e:
+            error_msg = f"Out of memory while converting PDF. Try reducing PDF_CONVERSION_DPI or MAX_PAGES_PER_DOCUMENT environment variables."
+            logger.error(error_msg)
+            try:
+                documents_collection.update_one(
+                    {'_id': doc_id},
+                    {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
+                )
+            except Exception as db_err:
+                logger.error(f"Failed to update document status: {db_err}")
+            raise MemoryError(error_msg)
+            
+        except (ValueError, OSError, IOError, RuntimeError) as e:
+            error_msg = f"PDF conversion failed: {str(e)}"
+            logger.error(error_msg)
+            try:
+                documents_collection.update_one(
+                    {'_id': doc_id},
+                    {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
+                )
+            except Exception as db_err:
+                logger.error(f"Failed to update document status: {db_err}")
+            raise RuntimeError(error_msg)
+            
+        except Exception as e:
+            error_msg = f"Unexpected error during PDF conversion: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            try:
+                documents_collection.update_one(
+                    {'_id': doc_id},
+                    {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
+                )
+            except Exception as db_err:
+                logger.error(f"Failed to update document status: {db_err}")
+            raise
+        
+        # Safety check: Ensure images were successfully created
+        if not images:
+            error_msg = "Failed to convert PDF to images - images list is empty"
+            logger.error(error_msg)
+            try:
+                documents_collection.update_one(
+                    {'_id': doc_id},
+                    {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
+                )
+            except Exception as db_err:
+                logger.error(f"Failed to update document status: {db_err}")
+            raise ValueError(error_msg)
+        
+        # ========================
+        # Process Each Logical Document
+        # ========================
+        processed_data = []
+        
+        for idx, logical_doc in enumerate(logical_documents):
+            logger.info(f"Processing logical document {idx + 1}/{len(logical_documents)}")
+
+            doc_text = logical_doc.get('text', '')
+            doc_embedding = logical_doc.get('embedding', [])
+            
+            if not doc_text:
+                logger.warning(f"  Logical document {idx + 1} has no text, skipping")
+                continue
+
+            # 2a. Validate OCR Quality with Llama (optional, with timeout)
+            ocr_validation = {'quality_score': 0.9, 'corrections_made': 0, 'issues_found': []}
+            if ENABLE_OCR_VALIDATION:
+                logger.info("  Validating OCR quality...")
+                from app.services.ocr_validation import validate_ocr_quality
+                
+                # Get timeout from config
+                ocr_timeout = config.get('OCR_VALIDATION_TIMEOUT', 30)
+                
+                try:
+                    ocr_validation = await asyncio.wait_for(
+                        validate_ocr_quality(doc_text, models),
+                        timeout=float(ocr_timeout)
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"  OCR validation timed out after {ocr_timeout}s, using default")
+                    ocr_validation = {'quality_score': 0.5, 'corrections_made': 0, 'issues_found': ['Validation timeout']}
+
+                # Use corrected text if quality improved
+                if ocr_validation.get('corrections_made', 0) > 0:
+                    logger.info(f"  ✓ OCR corrected: {ocr_validation['corrections_made']} corrections")
+                    doc_text = ocr_validation.get('corrected_text', doc_text)
+                    # Re-generate embedding for corrected text
+                    search_model = models.get('sentence_transformer_search')
+                    if search_model is not None:
+                        doc_embedding = search_model.encode(doc_text, convert_to_tensor=False).tolist()
+                    else:
+                        logger.warning("  Search model not available, keeping original embedding")
+
+            # 2b. Classify with Llama Reasoning (optional based on config)
+            if ENABLE_CLASSIFICATION:
+                logger.info("  Classifying document...")
+                initial_classification = classify_text(doc_text, models)
+
+                # Add reasoning to classification
+                from app.core.classifier import classify_with_reasoning
+                
+                # Get timeout from config
+                classification_timeout = config.get('CLASSIFICATION_TIMEOUT', 45)
+                
+                try:
+                    classification = await asyncio.wait_for(
+                        classify_with_reasoning(doc_text, models, initial_classification),
+                        timeout=float(classification_timeout)
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"  Classification timed out after {classification_timeout}s, using initial classification")
+                    classification = initial_classification
+            else:
+                logger.info("  ⏸️ Classification disabled - using 'unknown' type")
+                classification = {
+                    'label': 'unknown',
+                    'confidence': 0.0,
+                    'reasoning': 'Classification disabled in configuration'
+                }
+            
+            # 2b. Embedding already computed in document_splitter
+            
+            # Log memory usage for monitoring
+            if torch.cuda.is_available():
+                from app.models.loader import get_gpu_memory_usage
+                gpu_mem = get_gpu_memory_usage()
+                logger.info(f"  GPU memory usage: {gpu_mem:.1f} MB")
+                if gpu_mem > _MAX_GPU_MEMORY_MB * 0.9:  # 90% threshold
+                    logger.warning(f"  ⚠️ GPU memory high ({gpu_mem:.1f} MB), clearing cache")
+                    torch.cuda.empty_cache()
+            
+            # 2c. Detect signatures with YOLOv8n, then OCR with TrOCR Large on cropped region (optional)
+            signature_found = False
+            signature_text = ""
+            signature_box = None
+            signature_boxes = []
+            signature_confidence = 0.0
+            sig_validation = None
+
+            # Clear GPU cache before signature detection to prevent OOM
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            if ENABLE_SIGNATURE_DETECTION:
+                logger.info("  Detecting signatures...")
+                start_page = logical_doc['start_page']
+                end_page = logical_doc['end_page']
+                
+                # Process max 5 pages to prevent memory overflow
+                max_pages = min(end_page + 1, len(images), start_page + 5)
+
+                for p in range(start_page, max_pages):
+                    img = images[p]
+                    
+                    # Clear GPU cache every 2 pages
+                    if torch.cuda.is_available() and (p - start_page) % 2 == 0:
+                        torch.cuda.empty_cache()
+                        logger.debug(f"GPU cache cleared at page {p+1}")
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                        tmp_path = tmp.name
+                    
+                    try:
+                        img.save(tmp_path)
+                        # Use YOLOv8n to detect boxes on this page image
+                        yolo_boxes = detect_signature_boxes_yolo(img, models)
+                        
+                        # Only run TrOCR if YOLO actually detected signature regions
+                        if not yolo_boxes:
+                            logger.debug(f"  No signature regions detected on page {p+1}")
+                            continue
+                        
+                        # Run TrOCR on detected box
+                        sig_result = ocr_signature(tmp_path, models, boxes=yolo_boxes)
+                        
+                        # Validate that extracted text looks like a signature (not just random text/numbers)
+                        extracted_text = sig_result.get('text', '').strip()
+                        if sig_result.get('found') and extracted_text:
+                            # Filter out false positives: pure numbers, single characters, common words
+                            if (len(extracted_text) >= 2 and  # At least 2 characters
+                                not extracted_text.replace('.', '').replace(',', '').isdigit() and  # Not just numbers
+                                extracted_text.lower() not in ['total', 'price', 'invoice', 'order', 'date', 'customer', 'address']):  # Not table headers
+                                signature_found = True
+                                signature_text = extracted_text
+                                signature_box = sig_result.get('box')
+                                signature_boxes = sig_result.get('boxes', [])
+                                signature_confidence = float(sig_result.get('confidence', 0.75))
+                                logger.info(f"  ✓ Signature candidate found on page {p+1}: '{signature_text}'")
+                                break  # stop at first positive page
+                            else:
+                                logger.debug(f"  ✗ False positive filtered on page {p+1}: '{extracted_text}'")
+                    finally:
+                        try:
+                            if os.path.exists(tmp_path):
+                                os.remove(tmp_path)
+                                logger.debug(f"Cleaned up temp file: {tmp_path}")
+                        except Exception as e:
+                            logger.warning(f"Failed to cleanup temp file {tmp_path}: {e}")
+                
+                # Clear GPU after signature detection
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    logger.debug("GPU cache cleared after signature detection")
+            
+                # 2d. Validate signature with Llama (if found and enabled, with timeout)
+                if ENABLE_SIGNATURE_VALIDATION and signature_found and signature_text:
+                    logger.info("  Validating signature...")
+                    from app.services.signature_validation import validate_signature_text
+                    try:
+                        sig_validation = await asyncio.wait_for(
+                            validate_signature_text(signature_text, doc_text, models),
+                            timeout=30.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("  Signature validation timed out after 30s")
+                        sig_validation = {'validation_status': 'timeout', 'is_valid': False, 'corrected_signature': signature_text, 'confidence': signature_confidence}
+
+                    # Use corrected signature if validation improved it
+                    corrected_sig = sig_validation.get('corrected_signature', signature_text)
+                    if corrected_sig != signature_text:
+                        logger.info(f"  ✓ Signature corrected: '{signature_text}' → '{corrected_sig}'")
+                        signature_text = corrected_sig
+                        signature_confidence = sig_validation.get('confidence', signature_confidence)
+                elif signature_found and not ENABLE_SIGNATURE_VALIDATION:
+                    logger.info("  ⏸️ Signature validation disabled - skipping")
+
+            # 2e. Extract structured data based on document type (optional, with timeout)
+            structured_extraction = {'success': False, 'extracted_fields': {}}
+            if ENABLE_STRUCTURED_EXTRACTION:
+                logger.info("  Extracting structured data...")
+                from app.utils.extraction import extract_structured_data
+                doc_type = classification.get('label', 'unknown')
+                try:
+                    structured_extraction = await asyncio.wait_for(
+                        extract_structured_data(doc_text, doc_type, models),
+                        timeout=60.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("  Structured data extraction timed out after 60s")
+                    structured_extraction = {'success': False, 'extracted_fields': {}, 'error': 'timeout'}
+
+            # 2f. Extract entities (optional, with timeout)
+            entities = {'companies': [], 'people': [], 'dates': [], 'amounts': [], 'addresses': [], 'emails': [], 'phone_numbers': []}
+            if ENABLE_ENTITY_EXTRACTION:
+                logger.info("  Extracting entities...")
+                from app.utils.extraction import extract_entities
+                try:
+                    entities = await asyncio.wait_for(
+                        extract_entities(doc_text, models),
+                        timeout=45.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("  Entity extraction timed out after 45s")
+                    entities = {'companies': [], 'people': [], 'dates': [], 'amounts': [], 'addresses': [], 'emails': [], 'phone_numbers': [], 'error': 'timeout'}
+
+            # 2f-2. Extract tables from pages (optional, with timeout)
+            tables = []
+            ENABLE_TABLE_EXTRACTION = config.get('ENABLE_TABLE_EXTRACTION', True)
+            if ENABLE_TABLE_EXTRACTION:
+                from app.services.table_extraction import extract_tables_from_pdf_pages, extract_tables_from_text_with_llama
+                
+                # Try visual table extraction if page images available
+                if logical_doc.get('pages') and len(logical_doc.get('pages', [])) > 0:
+                    logger.info(f"  Extracting tables from {len(logical_doc['pages'])} pages...")
+                    try:
+                        page_tables = await asyncio.wait_for(
+                            extract_tables_from_pdf_pages(logical_doc['pages']),
+                            timeout=90.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("  Table extraction timed out after 90s")
+                        page_tables = {}
+                    
+                    # Flatten page tables with page numbers
+                    for page_num, page_table_list in page_tables.items():
+                        for table in page_table_list:
+                            table['page'] = page_num
+                            tables.append(table)
+                    
+                    if tables:
+                        logger.info(f"  ✓ Extracted {len(tables)} visual tables from document")
+                
+                # Fallback or additional: Try text-based table extraction with LLaMA
+                if not tables and doc_text:
+                    logger.info("  No visual tables found, attempting text-based table extraction with LLaMA...")
+                    try:
+                        text_tables = await asyncio.wait_for(
+                            extract_tables_from_text_with_llama(doc_text, models),
+                            timeout=30.0
+                        )
+                        if text_tables:
+                            tables = text_tables
+                            logger.info(f"  ✓ Extracted {len(tables)} text-formatted tables with LLaMA")
+                    except asyncio.TimeoutError:
+                        logger.warning("  Text-based table extraction timed out after 30s")
+                    except Exception as e:
+                        logger.warning(f"  Text-based table extraction failed: {e}")
+            else:
+                logger.info("  ⏸️ Table extraction disabled")
+
+            # 2g. Generate summary using Llama (optional based on config, with health check and timeout)
+            summary = ""
+            if ENABLE_SUMMARY:
+                logger.info("  Generating summary...")
+                if is_llamafile_healthy():
+                    try:
+                        summary = await asyncio.wait_for(
+                            generate_summary(doc_text, models),
+                            timeout=60.0
+                        )
+                        # Re-check Llamafile health after generation (detect crash during call)
+                        if not is_llamafile_healthy():
+                            logger.warning("  Llamafile crashed during generation, using fallback")
+                            summary = doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
+                    except asyncio.TimeoutError:
+                        logger.warning("  Summary generation timed out after 60s, using fallback")
+                        summary = doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
+                    except (ValueError, RuntimeError, ConnectionError) as e:
+                        logger.warning(f"  Summary generation failed: {e}, rechecking Llamafile...")
+                        if not is_llamafile_healthy():
+                            logger.error("  Llamafile crashed or disconnected")
+                        summary = doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
+                else:
+                    logger.warning("  Llamafile not healthy, using text fallback for summary")
+                    summary = doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
+            else:
+                logger.info("  ⏸️ Summary generation disabled")
+
+            # Store processed document with ALL enhancements
+            processed_doc = {
+                'logical_doc_num': logical_doc.get('doc_num', idx + 1),
+                'page_range': f"{logical_doc.get('start_page', 1)}-{logical_doc.get('end_page', 1)}",
+                'page_count': logical_doc.get('page_count', 1),
+                'text': doc_text[:2000] + "..." if len(doc_text) > 2000 else doc_text,
+                'full_text': doc_text,  # Store full text for Q&A
+                'embedding': doc_embedding,
+
+                # Enhanced Classification with Reasoning
+                'classification': classification,
+
+                # OCR Quality Validation
+                'ocr_validation': {
+                    'quality_score': ocr_validation.get('quality_score', 0.0),
+                    'corrections_made': ocr_validation.get('corrections_made', 0),
+                    'issues_found': ocr_validation.get('issues_found', [])
+                },
+
+                # Signature Detection & Validation
+                'signature_detected': signature_found,
+                'signature_confidence': signature_confidence,
+                'signature_text': signature_text,
+                'signature_box': signature_box,
+                'signature_boxes': signature_boxes,
+                'signature_validation': sig_validation if signature_found else None,
+
+                # Structured Data Extraction
+                'structured_data': structured_extraction.get('extracted_fields', {}),
+                'extraction_confidence': structured_extraction.get('extraction_confidence', 0.0),
+
+                # Entity Recognition
+                'entities': entities,
+
+                # Table Extraction
+                'tables': tables,
+                'table_count': len(tables),
+
+                # Summary
+                'summary': summary,
+                'processed_at': datetime.utcnow().isoformat()
+            }
+
+            processed_data.append(processed_doc)
+        
+        # Step 3: Save results to MongoDB (optional based on config)
+        if ENABLE_MONGODB_STORAGE:
+            logger.info(f"Saving {len(processed_data)} processed documents to MongoDB...")
+            documents_collection.update_one(
+                {'_id': doc_id},
+                {
+                    '$set': {
+                        'status': 'COMPLETE',
+                        'processed_data': processed_data,
+                        'processing_completed': datetime.utcnow(),
+                        'document_count': len(processed_data),
+                        'error': None
+                    }
+                }
+            )
+        else:
+            logger.info("⏸️ MongoDB storage disabled - results not saved")
+            # Still mark as complete but don't save processed_data
+            documents_collection.update_one(
+                {'_id': doc_id},
+                {
+                    '$set': {
+                        'status': 'COMPLETE',
+                        'processing_completed': datetime.utcnow(),
+                        'error': None
+                    }
+                }
+            )
+        
+        logger.info(f"✓ Pipeline complete for {doc_id}")
+        
+    except (ValueError, RuntimeError, OSError, IOError, ConnectionError) as e:
+        logger.error(f"Error in pipeline for {doc_id}: {e}", exc_info=True)
+        
+        # Mark as failed
+        try:
+            # Convert doc_id to ObjectId if it's a string
+            obj_id = ObjectId(doc_id) if isinstance(doc_id, str) else doc_id
+            
+            # Get database collection (db is defined at start of function)
+            db = db_connection
+            documents_collection = db['documents']
+            documents_collection.update_one(
+                {'_id': obj_id},
+                {
+                    '$set': {
+                        'status': 'FAILED',
+                        'error': str(e),
+                        'processing_completed': datetime.utcnow()
+                    }
+                }
+            )
+        except (ValueError, RuntimeError, ConnectionError) as db_error:
+            logger.error(f"Failed to mark document as failed: {db_error}")
+
+
+async def generate_summary(text: str, models: Dict[str, Any]) -> str:
+    """
+    Generate document summary using Llama model
+    Falls back to simple text truncation if Llama unavailable
+    
+    Args:
+        text: Document text to summarize
+        models: Loaded models dictionary
+        
+    Returns:
+        Summary string (max 500 chars)
+    """
+    try:
+        # Check if Llama is available
+        if models.get('llama') is None:
+            logger.info("Llama not available, using fallback summary")
+            # Simple fallback: first N sentences
+            sentences = text.split('. ')
+            fallback = '. '.join(sentences[:3]) + ('.' if sentences else '')
+            return fallback[:500]
+        
+        # Load Llama if not already loaded
+        from app.models.loader import load_llama_model
+        llama = models.get('llama')
+        
+        if llama is None:
+            llama = load_llama_model()
+            models['llama'] = llama
+        
+        if llama is None:
+            # Fallback if loading failed
+            sentences = text.split('. ')
+            fallback = '. '.join(sentences[:3]) + ('.' if sentences else '')
+            return fallback[:500]
+        
+        # Prepare prompt
+        text_input = text[:1500]  # Limit input to avoid token overflow
+        prompt = (
+            "You are a document summarization assistant. "
+            "Summarize ONLY the information that appears in the document below. "
+            "Do not add any details, names, dates, or amounts that are not explicitly stated in the text.\n\n"
+            f"Document text:\n{text_input}\n\n"
+            "Summary (2-3 sentences, facts only):"
+        )
+        
+        # Generate summary with Control Panel settings
+        logger.info("Generating summary with Llama...")
+        from app.api.config_endpoints import get_runtime_config
+        config = get_runtime_config()
+        llama_temp = config.get('LLAMA_TEMPERATURE', 0.3)
+        llama_tokens = config.get('LLAMA_MAX_TOKENS', 512)
+        response = llama(
+            prompt,
+            max_tokens=llama_tokens,  # Read from Control Panel
+            temperature=llama_temp,  # Read from Control Panel
+            top_p=0.9
+        )
+        
+        summary = response['choices'][0]['text'].strip()
+        logger.info(f"✓ Generated summary ({len(summary)} chars)")
+        
+        return summary[:500]
+        
+    except (ValueError, RuntimeError, ConnectionError, KeyError) as e:
+        logger.warning(f"Error generating summary: {e}")
+        # Return simple fallback
+        sentences = text.split('. ')
+        fallback = '. '.join(sentences[:3]) + ('.' if sentences else '')
+        return fallback[:500]
+
+
+def cleanup_temp_files(doc_id: str, temp_dir: str = '/tmp') -> None:
+    """
+    Clean up temporary files created during processing
+    """
+    import shutil
+    doc_temp = os.path.join(temp_dir, f'doc_{doc_id}')
+    
+    try:
+        if os.path.exists(doc_temp):
+            shutil.rmtree(doc_temp)
+            logger.info(f"Cleaned up temporary files for {doc_id}")
+    finally:
+        if os.path.exists(doc_temp):
+            logger.warning(f"Temp directory still exists after cleanup attempt: {doc_temp}")

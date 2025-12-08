@@ -1,4 +1,52 @@
 __pycache__/
 *.pyc
+*.pyo
 .venv/
+.venv312/
 .env
+.env.backup*
+.env.gpu
+
+# Data directories
+data/uploads/
+data/temp/
+uploads/
+
+# Logs
+logs/
+*.log
+
+# Models - Exclude all large model files
+models/
+*.gguf
+*.bin
+*.safetensors
+*.pdiparams
+*.pdmodel
+*.onnx
+*.pt
+*.pth
+*.h5
+*.pb
+
+# Llamafile executables
+*.exe
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Test files
+*.pdf
+*.png
+*.jpg
+*.jpeg

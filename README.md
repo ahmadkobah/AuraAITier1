@@ -1,272 +1,249 @@
-ï»¿# AI Service Tier 1 - Lightweight Document Processing
+# Adaptive Document Processing - AI Service
 
-A lightweight, production-ready microservice for document processing, classification, search, and question-answering. Designed for on-premise deployment with minimal dependencies and fast inference.
+**Version 2.0** | AI-powered document processing with OCR, classification, and intelligent search
 
-## Overview
+## ?? Overview
 
-**AI Service Tier 1** processes documents end-to-end:
+Professional document management system featuring:
+- **OCR/ICR**: Text extraction from images and PDFs (PaddleOCR + TrOCR)
+- **Signature Detection**: YOLO-based signature localization
+- **Document Classification**: 10 document types with zero-shot learning
+- **Semantic Search**: Vector embeddings with text matching (all-MiniLM-L6-v2)
+- **Conversational Q&A**: Llama 3.2 3B for natural language queries
+- **GPU Acceleration**: CUDA-optimized (NVIDIA RTX 3060)
 
-1. **Document Splitting** - Automatically split multi-document PDFs into logical documents using embedding-based break detection
-2. **Text Extraction** - OCR for both printed text (PaddleOCR) and handwriting (TrOCR)
-3. **Classification** - Zero-shot document classification using sentence embeddings
-4. **Signature Detection** - Detect signatures and handwritten marks using Florence-2
-5. **Vector Search** - Semantic search across embeddings
-6. **Question Answering** - Generate answers from document context using Llama 3.2 3B
-
-## Architecture
+## ??? Project Structure
 
 ```
-Main Backend (Node.js/React)
-         |
-         | POST /api/v1/process (doc_id, pdf_path)
-         v
-   AI Service Tier 1 (FastAPI)
-         |
-    [Background Worker]
-         |
-    â”œâ”€ Split PDF (embedding-based)
-    â”œâ”€ Extract Text (PaddleOCR + TrOCR)
-    â”œâ”€ Classify (all-MiniLM-L12-v2)
-    â”œâ”€ Detect Signatures (Florence-2)
-    â”œâ”€ Generate Summary (Llama 3.2 3B)
-    â””â”€ Save to MongoDB
-         |
-         v
-   MongoDB (documents collection)
-         |
-    [Client polls status]
+adaptive-Dokumentenverarbeitung/
++-- app/                          # Application code
+¦   +-- api/                      # FastAPI endpoints
+¦   ¦   +-- __init__.py
+¦   ¦   +-- endpoints.py          # All API routes
+¦   +-- core/                     # Core business logic
+¦   ¦   +-- __init__.py
+¦   ¦   +-- pipeline.py           # Document processing pipeline
+¦   ¦   +-- classifier.py         # Document classification
+¦   +-- models/                   # ML model management
+¦   ¦   +-- __init__.py
+¦   ¦   +-- loader.py             # Model loading & caching
+¦   +-- services/                 # Specialized services
+¦   ¦   +-- __init__.py
+¦   ¦   +-- signature_detection.py
+¦   ¦   +-- signature_ocr.py
+¦   ¦   +-- signature_validation.py
+¦   ¦   +-- ocr_validation.py
+¦   +-- utils/                    # Utility functions
+¦   ¦   +-- __init__.py
+¦   ¦   +-- extraction.py         # Entity extraction
+¦   +-- __init__.py
+¦
++-- config/                       # Configuration
+¦   +-- __init__.py
+¦   +-- settings.py               # Centralized settings
+¦
++-- data/                         # Data storage
+¦   +-- uploads/                  # Uploaded documents
+¦   +-- temp/                     # Temporary files
+¦
++-- docs/                         # Documentation
+¦   +-- COMPLETE_APP_ARCHITECTURE.md
+¦   +-- INTEGRATION_QUICK_START.md
+¦   +-- CUDA_GPU_SETUP_GUIDE.md
+¦   +-- ...
+¦
++-- models/                       # Pre-trained models
+¦   +-- sentence-transformers/    # Embedding models
+¦   +-- trocr/                    # OCR models
+¦
++-- scripts/                      # Utility scripts
+¦   +-- start_services.ps1
+¦   +-- start_services.bat
+¦   +-- monitor_llamafile.ps1
+¦
++-- tests/                        # Test suite
+¦   +-- test_*.py                 # Unit tests
+¦   +-- ...
+¦
++-- main.py                       # Application entry point
++-- requirements.txt              # Python dependencies
++-- docker-compose.yml            # Docker configuration
++-- .env.example                  # Environment template
++-- README.md                     # This file
 ```
 
-## Model Stack
+## ?? Quick Start
 
-| Model | Purpose | Size | License |
-|-------|---------|------|---------|
-| **PaddleOCR v4** | Printed text recognition | ~200MB | Apache 2.0 |
-| **TrOCR-large-handwritten** | Handwriting recognition | 1.4GB | Apache 2.0 |
-| **Florence-2-base** | Object/form detection | 500MB | MIT |
-| **all-MiniLM-L12-v2** | Zero-shot classification | 90MB | Apache 2.0 |
-| **all-MiniLM-L6-v2** | Search embeddings | 80MB | Apache 2.0 |
-| **Llama 3.2 3B GGUF** | Local LLM (Q&A) | 2-3GB | Llama 2 License |
+### 1. **Prerequisites**
 
-**Total Footprint:** ~6-7GB
+- Python 3.13+
+- MongoDB (local or Atlas)
+- NVIDIA GPU (optional, for acceleration)
+- 8GB+ RAM
 
-## Quick Start
-
-### Local Installation
+### 2. **Installation**
 
 ```bash
-# 1. Clone repository
-git clone <repo>
+# Clone repository
+git clone https://github.com/ahmadkobah/adaptive-Dokumentenverarbeitung.git
 cd adaptive-Dokumentenverarbeitung
 
-# 2. Create virtual environment
-python -m venv venv
-source venv/bin/activate  # or `venv\Scripts\activate` on Windows
+# Create virtual environment
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+source .venv/bin/activate  # Linux/Mac
 
-# 3. Install dependencies
+# Install dependencies
 pip install -r requirements.txt
 
-# 4. Setup environment
-cp .env.example .env
-# Edit .env with your MongoDB connection
-
-# 5. Run main server
-uvicorn app.main:app --reload --port 8080
+# Configure environment
+copy .env.example .env
+# Edit .env with your settings
 ```
 
-Main server will start on `http://localhost:8080`
+### 3. **Start Services**
 
-### Testing (Optional)
+#### Option A: Using Scripts (Recommended)
+```powershell
+# Windows
+.\scripts\start_services.ps1
 
-Run the test server on a separate port (8001) to test individual components:
+# Linux/Mac
+./scripts/start_services.sh
+```
+
+#### Option B: Manual Start
+```bash
+# Terminal 1: Start Llamafile
+.\llama-3.2-3b.exe --server --host 0.0.0.0 --port 8080 --n-gpu-layers 29
+
+# Terminal 2: Start AI Service
+uvicorn main:app --host 0.0.0.0 --port 9000 --reload
+```
+
+### 4. **Verify Installation**
 
 ```bash
-# In a new terminal, from the same directory
-python run_test_server.py
+curl http://localhost:9000/health
 ```
 
-Test server will start on `http://localhost:8001` with endpoints:
-- `GET /test/health` - Test health check
-- `GET /test/models` - List loaded models
-- `POST /test/simple-ocr?image_path=<path>` - Test OCR on image
-- `POST /test/embedding?text=<text>` - Test text embedding
-- `POST /test/classification?text=<text>` - Test zero-shot classification
-
-### Docker Deployment
-
-```bash
-# Build image
-docker build -t ai-service-tier1:latest .
-
-# Run container
-docker run -p 8000:8000 \
-  -e DATABASE_URL="mongodb://mongodb:27017" \
-  -v /path/to/storage:/storage \
-  ai-service-tier1:latest
-```
-
-## API Endpoints
-
-### 1. Health Check
-```http
-GET /health
-```
-
-### 2. Service Status
-```http
-GET /api/v1/status
-```
-
-### 3. Process Document (Fire-and-Forget)
-```http
-POST /api/v1/process
+Expected response:
+```json
 {
-  "doc_id": "doc_12345",
-  "pdf_file_path": "/storage/uploads/invoice.pdf"
+  "status": "healthy",
+  "models_loaded": true,
+  "gpu_available": true,
+  "message": "All models loaded and ready"
 }
 ```
 
-### 4. Vector Search
-```http
-POST /api/v1/search
-{
-  "query": "payment terms",
-  "doc_id": "doc_12345",
-  "top_k": 5
-}
-```
+## ?? API Endpoints
 
-### 5. Question Answering
-```http
-POST /api/v1/query
-{
-  "doc_id": "doc_12345",
-  "question": "What is the total amount due?"
-}
-```
+### Document Processing
+- `POST /api/v1/upload` - Upload & process document
+- `POST /api/v1/process` - Process existing document
+- `GET /api/v1/documents/{doc_id}/status` - Check processing status
 
-## MongoDB Schema
+### Search & Q&A
+- `POST /api/v1/search` - Semantic vector search
+- `POST /api/v1/conversational-search` - LLaMA-powered conversational search
+- `POST /api/v1/query` - Q&A over documents
+- `POST /api/v1/qa` - Alias for /query
 
-Documents collection stores all processing results:
+### Analysis
+- `POST /api/v1/summarize` - Generate summaries
+- `POST /api/v1/extract` - Extract structured data
+- `POST /api/v1/entities` - Extract entities (names, dates, amounts)
+- `POST /api/v1/validate-ocr` - Validate OCR quality
 
-```javascript
-{
-  _id: "doc_12345",
-  status: "COMPLETE",  // PENDING | PROCESSING | COMPLETE | FAILED
-  created_at: ISODate("2025-11-15T10:00:00Z"),
-  processing_started: ISODate("2025-11-15T10:05:00Z"),
-  processing_completed: ISODate("2025-11-15T10:08:00Z"),
-  pdf_path: "/storage/uploads/invoice.pdf",
-  
-  processed_data: [
-    {
-      logical_doc_num: 0,
-      page_range: "0-2",
-      page_count: 3,
-      text: "Invoice #INV-001...",
-      embedding: [0.123, -0.456, ...],
-      classification: { label: "Invoice", score: 0.92 },
-      signature_detected: true,
-      summary: "Invoice from Acme Corp for $5,250...",
-      processed_at: "2025-11-15T10:08:00Z"
-    }
-  ],
-  
-  document_count: 1,
-  error: null
-}
-```
+### System
+- `GET /health` - Service health check
+- `GET /models` - List loaded models
+- `GET /docs` - Interactive API documentation
 
-## Configuration
+## ?? Configuration
 
-Copy `.env.example` to `.env`:
+Edit `config/settings.py` or set environment variables in `.env`:
 
-```bash
-DATABASE_URL=mongodb://localhost:27017
-MAIN_DB_NAME=document_processing
-HOST=0.0.0.0
-PORT=8000
-MODELS_DIR=/app/models
-LLAMA_MODEL_PATH=/app/models/llama-3.2-3b-gguf/model.gguf
+```env
+# API Configuration
+API_HOST=0.0.0.0
+API_PORT=9000
+
+# MongoDB
+MONGO_URL=mongodb://localhost:27017/
+DATABASE_NAME=Aura
+
+# Llamafile
+LLAMAFILE_URL=http://localhost:8080
+
+# GPU
 USE_GPU=true
-DOCUMENT_SPLIT_SIMILARITY_THRESHOLD=0.5
+GPU_LAYERS=29
 ```
 
-## Performance
-
-- **Single Page:** 1.5-2.5 seconds
-- **10-Page Document:** 8-15 seconds  
-- **GPU vs CPU:** 3-5x faster with NVIDIA GPU (CUDA 11.8+)
-
-## Troubleshooting
-
-**Models Not Loading:**
-```bash
-docker logs ai-service-tier1
-df -h  # Verify 8GB+ free space
-```
-
-**MongoDB Connection Failed:**
-```bash
-docker ps | grep mongodb
-# Check DATABASE_URL in .env
-```
-
-**Out of Memory:**
-```bash
-USE_GPU=false  # Use CPU instead
-```
-
-## Development
+## ?? Testing
 
 ```bash
-# Local development with hot reload
-uvicorn app.main:app --reload --port 8000
-
-# Build Docker image
-docker build -t ai-service-tier1:latest .
-
-# Run tests
+# Run all tests
 pytest tests/
+
+# Run specific test
+pytest tests/test_pipeline_components.py
+
+# With coverage
+pytest --cov=app tests/
 ```
 
-## Integration with Main Backend
+## ?? Performance
 
-Node.js/React backend integration:
+- **Processing Speed**: 3-5s per page
+- **Search Latency**: 200-500ms (semantic), 2-4s (conversational)
+- **GPU Memory**: 2.85GB VRAM
+- **Model Loading**: ~15s (lazy loading)
 
-```javascript
-// 1. Queue processing
-await fetch('http://localhost:8080/api/v1/process', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    doc_id: 'doc_12345',
-    pdf_file_path: '/storage/uploads/invoice.pdf'
-  })
-});
+## ??? Tech Stack
 
-// 2. Poll MongoDB for results
-const doc = await db.collection('documents').findOne({_id: 'doc_12345'});
-if (doc.status === 'COMPLETE') {
-  console.log(doc.processed_data);
-}
+**Backend:**
+- FastAPI (API framework)
+- PyMongo (MongoDB driver)
+- Uvicorn (ASGI server)
 
-// 3. Search documents
-const results = await fetch('http://localhost:8080/api/v1/search', {
-  method: 'POST',
-  body: JSON.stringify({ query: 'payment terms', top_k: 5 })
-});
+**AI/ML:**
+- Llama 3.2 3B (llamafile)
+- Sentence Transformers (embeddings)
+- YOLOv8n (signature detection)
+- TrOCR (handwriting OCR)
+- PaddleOCR (printed text OCR)
 
-// 4. Ask questions
-const answer = await fetch('http://localhost:8080/api/v1/query', {
-  method: 'POST',
-  body: JSON.stringify({
-    doc_id: 'doc_12345',
-    question: 'What is the total amount?'
-  })
-});
-```
+**GPU:**
+- CUDA 11.8
+- PyTorch 2.5.1
+- NVIDIA RTX 3060
 
-## License
+## ?? Documentation
 
-Apache 2.0
+- [Complete Architecture](docs/COMPLETE_APP_ARCHITECTURE.md)
+- [Integration Guide](docs/INTEGRATION_QUICK_START.md)
+- [CUDA Setup](docs/CUDA_GPU_SETUP_GUIDE.md)
+
+## ?? Integration
+
+This service integrates with **Aura** (main app):
+- Aura Backend: `http://localhost:8000`
+- Aura Frontend: `http://localhost:3000`
+- AI Service: `http://localhost:9000`
+
+See [Integration Quick Start](docs/INTEGRATION_QUICK_START.md) for details.
+
+## ?? License
+
+MIT License - See LICENSE file for details
+
+## ?? Author
+
+Ahmad Kobah
+
+---
+
+**Need help?** Check the [docs](docs/) or open an issue on GitHub.

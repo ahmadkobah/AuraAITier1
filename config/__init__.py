@@ -1,0 +1,15 @@
+"""
+Configuration Package
+"""
+
+from config.settings import *
+
+__all__ = [
+    'API_HOST', 'API_PORT', 'API_TITLE', 'API_VERSION',
+    'MONGO_URL', 'DATABASE_NAME',
+    'LLAMAFILE_URL', 'LLAMA_TEMPERATURE', 'LLAMA_MAX_TOKENS',
+    'MODELS_DIR', 'UPLOADS_DIR', 'TEMP_DIR',
+    'MAX_UPLOAD_SIZE_MB', 'SUPPORTED_FILE_TYPES',
+    'SEARCH_SIMILARITY_THRESHOLD', 'SEARCH_TOP_K_DEFAULT',
+    'USE_GPU', 'GPU_LAYERS'
+]

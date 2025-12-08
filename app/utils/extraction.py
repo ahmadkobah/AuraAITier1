@@ -1,0 +1,898 @@
+"""
+Structured Data Extraction Module
+Uses Llama 3.2 3B to extract structured fields from documents
+"""
+
+import logging
+import json
+import re
+from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger("extraction")
+
+
+# Document type specific extraction schemas
+EXTRACTION_SCHEMAS = {
+    'invoice': {
+        'fields': [
+            'invoice_number',
+            'invoice_date',
+            'due_date',
+            'vendor_name',
+            'vendor_address',
+            'customer_name',
+            'customer_address',
+            'subtotal',
+            'tax_amount',
+            'total_amount',
+            'currency',
+            'payment_terms'
+        ]
+    },
+    'contract': {
+        'fields': [
+            'contract_number',
+            'contract_date',
+            'effective_date',
+            'expiration_date',
+            'party_a',
+            'party_b',
+            'contract_value',
+            'payment_terms',
+            'termination_clause'
+        ]
+    },
+    'receipt': {
+        'fields': [
+            'receipt_number',
+            'date',
+            'merchant_name',
+            'merchant_address',
+            'total_amount',
+            'payment_method',
+            'currency'
+        ]
+    },
+    'letter': {
+        'fields': [
+            'date',
+            'sender',
+            'recipient',
+            'subject',
+            'reference_number'
+        ]
+    },
+    'purchase_order': {
+        'fields': [
+            'po_number',
+            'order_date',
+            'vendor_name',
+            'delivery_date',
+            'delivery_address',
+            'total_amount',
+            'currency',
+            'buyer_name',
+            'terms'
+        ]
+    },
+    'credit_note': {
+        'fields': [
+            'credit_note_number',
+            'date',
+            'original_invoice_number',
+            'vendor_name',
+            'credit_amount',
+            'currency',
+            'reason',
+            'customer_name'
+        ]
+    },
+    'debit_note': {
+        'fields': [
+            'debit_note_number',
+            'date',
+            'original_invoice_number',
+            'vendor_name',
+            'debit_amount',
+            'currency',
+            'reason'
+        ]
+    },
+    'payment_voucher': {
+        'fields': [
+            'voucher_number',
+            'date',
+            'payee_name',
+            'amount',
+            'currency',
+            'payment_method',
+            'purpose'
+        ]
+    },
+    'bank_statement': {
+        'fields': [
+            'account_number',
+            'statement_period',
+            'opening_balance',
+            'closing_balance',
+            'bank_name',
+            'account_holder'
+        ]
+    },
+    'financial_statement': {
+        'fields': [
+            'statement_type',
+            'period',
+            'date',
+            'company_name',
+            'fiscal_year',
+            'currency'
+        ]
+    },
+    'tax_document': {
+        'fields': [
+            'tax_id',
+            'tax_year',
+            'tax_type',
+            'taxpayer_name',
+            'filing_date',
+            'tax_amount',
+            'currency'
+        ]
+    },
+    'non_disclosure_agreement': {
+        'fields': [
+            'agreement_date',
+            'effective_date',
+            'expiration_date',
+            'party_a',
+            'party_b',
+            'jurisdiction',
+            'purpose'
+        ]
+    },
+    'memorandum_of_understanding': {
+        'fields': [
+            'mou_date',
+            'effective_date',
+            'parties',
+            'purpose',
+            'duration',
+            'signatories'
+        ]
+    },
+    'license': {
+        'fields': [
+            'license_number',
+            'license_type',
+            'issue_date',
+            'expiration_date',
+            'licensee_name',
+            'issuing_authority'
+        ]
+    },
+    'permit': {
+        'fields': [
+            'permit_number',
+            'permit_type',
+            'issue_date',
+            'expiration_date',
+            'permit_holder',
+            'issuing_authority',
+            'location'
+        ]
+    },
+    'report': {
+        'fields': [
+            'report_type',
+            'date',
+            'period',
+            'department',
+            'author',
+            'report_number'
+        ]
+    },
+    'business_letter': {
+        'fields': [
+            'date',
+            'sender',
+            'sender_company',
+            'recipient',
+            'recipient_company',
+            'subject',
+            'reference_number'
+        ]
+    },
+    'memo': {
+        'fields': [
+            'date',
+            'from_person',
+            'to_person',
+            'subject',
+            'department',
+            'memo_number'
+        ]
+    },
+    'proposal': {
+        'fields': [
+            'proposal_number',
+            'date',
+            'proposer',
+            'recipient',
+            'subject',
+            'total_value',
+            'validity_period'
+        ]
+    },
+    'quotation': {
+        'fields': [
+            'quotation_number',
+            'date',
+            'vendor_name',
+            'customer_name',
+            'total_amount',
+            'currency',
+            'validity_period'
+        ]
+    },
+    'tender_document': {
+        'fields': [
+            'tender_number',
+            'tender_name',
+            'issue_date',
+            'submission_deadline',
+            'issuing_organization',
+            'estimated_value'
+        ]
+    },
+    'form': {
+        'fields': [
+            'form_type',
+            'form_number',
+            'date',
+            'applicant_name',
+            'reference_number',
+            'submission_date'
+        ]
+    },
+    'delivery_note': {
+        'fields': [
+            'delivery_note_number',
+            'delivery_date',
+            'shipper_name',
+            'recipient_name',
+            'recipient_address',
+            'order_reference',
+            'carrier'
+        ]
+    },
+    'packing_slip': {
+        'fields': [
+            'packing_slip_number',
+            'date',
+            'order_number',
+            'shipper',
+            'recipient',
+            'total_items',
+            'tracking_number'
+        ]
+    },
+    'bill_of_lading': {
+        'fields': [
+            'bol_number',
+            'date',
+            'shipper',
+            'consignee',
+            'carrier',
+            'origin',
+            'destination',
+            'shipping_date'
+        ]
+    },
+    'shipping_document': {
+        'fields': [
+            'document_number',
+            'shipping_date',
+            'carrier',
+            'tracking_number',
+            'origin',
+            'destination',
+            'recipient'
+        ]
+    },
+    'resume': {
+        'fields': [
+            'applicant_name',
+            'email',
+            'phone',
+            'education',
+            'experience_years',
+            'current_position',
+            'skills'
+        ]
+    },
+    'job_application': {
+        'fields': [
+            'application_date',
+            'applicant_name',
+            'position_applied',
+            'email',
+            'phone',
+            'availability_date'
+        ]
+    },
+    'employment_contract': {
+        'fields': [
+            'contract_date',
+            'start_date',
+            'employee_name',
+            'employer_name',
+            'position',
+            'salary',
+            'contract_duration'
+        ]
+    },
+    'agreement': {
+        'fields': [
+            'agreement_type',
+            'agreement_date',
+            'effective_date',
+            'parties',
+            'purpose',
+            'duration'
+        ]
+    },
+    'statement': {
+        'fields': [
+            'statement_type',
+            'account_number',
+            'period',
+            'date',
+            'account_holder'
+        ]
+    },
+    'certificate': {
+        'fields': [
+            'certificate_type',
+            'certificate_number',
+            'issue_date',
+            'expiration_date',
+            'recipient_name',
+            'issuing_authority'
+        ]
+    }
+}
+
+
+async def extract_structured_data(
+    text: str,
+    doc_type: str,
+    models: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Extract structured data from document text using Llama
+
+    Args:
+        text: Document text content
+        doc_type: Document type (invoice, contract, receipt, etc.)
+        models: Loaded models dictionary
+
+    Returns:
+        Dictionary with extracted fields and metadata
+    """
+    try:
+        # Normalize document type
+        doc_type_normalized = doc_type.lower().replace('_', ' ').strip()
+
+        # Get extraction schema for document type
+        schema = EXTRACTION_SCHEMAS.get(doc_type_normalized.split()[0], None)
+
+        if not schema:
+            logger.warning(f"No extraction schema for document type: {doc_type}")
+            return {
+                'success': False,
+                'error': f'No extraction schema for document type: {doc_type}',
+                'extracted_fields': {}
+            }
+
+        # Get Llama model
+        llama = models.get('llama')
+        if llama is None:
+            from app.models.loader import load_llama_model
+            llama = load_llama_model()
+            models['llama'] = llama
+
+        if llama is None:
+            logger.error("Llama model not available for extraction")
+            return {
+                'success': False,
+                'error': 'Llama model not available',
+                'extracted_fields': {}
+            }
+
+        # Prepare extraction prompt with clear field definitions
+        fields_list = ', '.join(schema['fields'])  # Extract ALL fields, not just first 6
+        
+        # Add specific instructions for invoice addresses
+        address_instructions = ""
+        if doc_type_normalized in ['invoice', 'receipt', 'purchase order']:
+            address_instructions = """
+IMPORTANT - Address Rules:
+- vendor_address: The address of the company/business ISSUING this document (the seller/supplier)
+- customer_address: The address of the person/company RECEIVING this document (the buyer)
+- Look for labels like "From:", "Sender:", "Issued by:" for vendor address
+- Look for labels like "Bill to:", "Ship to:", "Customer:", "Recipient:" for customer address
+"""
+        
+        prompt = f"""Extract fields from this {doc_type_normalized}. You MUST return ONLY valid JSON. Do not add explanations, notes, or extra text.{address_instructions}
+
+Document Text (first 1500 chars):
+{text[:1500]}
+
+Required Fields: {fields_list}
+
+CRITICAL RULES:
+1. Return ONLY valid JSON - no markdown, no explanations, no extra text
+2. Start response with {{ and end with }}
+3. Use null for missing fields (not "null", "none", "not found")
+4. Preserve exact dates, numbers, and amounts from the document
+5. Do not add any text after the closing }}
+
+Return JSON with extracted values:
+{{"""
+
+        logger.info(f"Extracting {len(schema['fields'])} fields for {doc_type_normalized}")
+
+        # Generate extraction with sufficient tokens for all fields (read from Control Panel)
+        from app.api.config_endpoints import get_runtime_config
+        config = get_runtime_config()
+        extraction_tokens = config.get('EXTRACTION_MAX_TOKENS', 500)
+        extraction_temp = config.get('EXTRACTION_TEMPERATURE', 0.1)
+        response = llama(
+            prompt,
+            max_tokens=extraction_tokens,  # Read from Control Panel
+            temperature=extraction_temp,  # Read from Control Panel
+            top_p=0.9,
+            stop=["}}\n\n", "}\n\nNote", "}\n\nThe", "Document", "Text", "\n\nExplanation"]
+        )
+
+        raw_output = response['choices'][0]['text'].strip()
+        logger.debug(f"Raw Llama output: {raw_output[:200]}")
+
+        # Parse JSON response
+        extracted_fields = parse_extraction_output(raw_output, schema['fields'])
+
+        # Post-process and validate fields
+        validated_fields = validate_extracted_fields(extracted_fields, doc_type_normalized)
+
+        logger.info(f"✓ Extracted {len([v for v in validated_fields.values() if v is not None])} fields")
+
+        return {
+            'success': True,
+            'document_type': doc_type,
+            'extracted_fields': validated_fields,
+            'extraction_confidence': calculate_extraction_confidence(validated_fields, schema['fields']),
+            'fields_extracted': len([v for v in validated_fields.values() if v is not None]),
+            'fields_requested': len(schema['fields'])
+        }
+
+    except Exception as e:
+        logger.error(f"Error extracting structured data: {e}", exc_info=True)
+        return {
+            'success': False,
+            'error': str(e),
+            'extracted_fields': {}
+        }
+
+
+def parse_extraction_output(raw_output: str, expected_fields: List[str]) -> Dict[str, Any]:
+    """
+    Parse Llama's extraction output into structured dictionary
+    Handles various JSON formats and extraction patterns
+    """
+    try:
+        # Clean up the raw output
+        cleaned = raw_output.strip()
+        
+        # Remove markdown code blocks
+        if '```' in cleaned:
+            cleaned = re.sub(r'^```json\s*', '', cleaned)
+            cleaned = re.sub(r'^```\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+        
+        # Remove any explanatory text after the JSON
+        # Stop at common explanation markers
+        for marker in ['\n\nNote:', '\n\nThe only', '\n\nExplanation:', '\n\nI extracted']:
+            if marker in cleaned:
+                cleaned = cleaned.split(marker)[0].strip()
+        
+        # Ensure JSON is properly closed
+        # Count braces to ensure balanced
+        open_braces = cleaned.count('{')
+        close_braces = cleaned.count('}')
+        if open_braces > close_braces:
+            cleaned += '}' * (open_braces - close_braces)
+        
+        # Try to parse the cleaned JSON
+        try:
+            # Find the JSON object (outermost braces)
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                parsed = json.loads(json_str)
+                logger.debug(f"Successfully parsed JSON with {len(parsed)} fields")
+                return parsed
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON parse failed after cleanup: {e}")
+        
+        # Fallback: Manual parsing with improved regex
+        logger.warning("Using manual regex parsing fallback")
+        result = {}
+        
+        for field in expected_fields:
+            # Try multiple patterns to capture the value
+            patterns = [
+                # Pattern 1: "field": "value" or "field": value
+                rf'"{field}"\s*:\s*"([^"]*)"',
+                rf'"{field}"\s*:\s*([^,}}\s]+)',
+                # Pattern 2: field: "value" or field: value (no quotes on field)
+                rf'{field}\s*:\s*"([^"]*)"',
+                rf'{field}\s*:\s*([^,}}\s]+)',
+                # Pattern 3: 'field': 'value' (single quotes)
+                rf"'{field}'\s*:\s*'([^']*)'",
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, cleaned, re.IGNORECASE)
+                if match:
+                    value = match.group(1).strip()
+                    # Skip null placeholders
+                    if value.lower() not in ['null', 'none', 'n/a', 'not found', '']:
+                        result[field] = value
+                    break
+        
+        logger.debug(f"Manual parsing extracted {len(result)} fields")
+        return result
+
+    except Exception as e:
+        logger.error(f"Error parsing extraction output: {e}", exc_info=True)
+        return {}
+
+
+def validate_extracted_fields(fields: Dict[str, Any], doc_type: str) -> Dict[str, Any]:
+    """
+    Validate and clean extracted fields
+    """
+    validated = {}
+
+    for key, value in fields.items():
+        # Skip null/empty values
+        if value is None or value == '' or str(value).lower() in ['null', 'none', 'n/a', 'not found']:
+            validated[key] = None
+            continue
+
+        # Validate dates
+        if 'date' in key.lower():
+            validated[key] = validate_date(value)
+
+        # Validate amounts
+        elif any(term in key.lower() for term in ['amount', 'total', 'subtotal', 'tax', 'price', 'value']):
+            validated[key] = validate_amount(value)
+
+        # Clean text fields
+        else:
+            validated[key] = str(value).strip()
+
+    return validated
+
+
+def validate_date(date_str: str) -> Optional[str]:
+    """
+    Validate and normalize date strings
+    Returns ISO format date or None
+    """
+    try:
+        from datetime import datetime
+        import re
+
+        date_str_clean = str(date_str).strip()
+
+        # Common date formats - EXPANDED to handle more variations
+        formats = [
+            '%Y-%m-%d',           # 2025-11-17
+            '%m/%d/%Y',           # 11/17/2025
+            '%d/%m/%Y',           # 17/11/2025
+            '%B %d, %Y',          # November 17, 2025
+            '%b %d, %Y',          # Nov 17, 2025
+            '%Y/%m/%d',           # 2025/11/17
+            '%d-%m-%Y',           # 17-11-2025
+            '%d.%m.%Y',           # 17.11.2025
+            '%Y.%m.%d',           # 2025.11.17
+            '%B %d %Y',           # November 17 2025 (no comma)
+            '%b %d %Y',           # Nov 17 2025 (no comma)
+            '%d %B %Y',           # 17 November 2025
+            '%d %b %Y'            # 17 Nov 2025
+        ]
+
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(date_str_clean, fmt)
+                # Sanity check: year should be reasonable (1900-2100)
+                if 1900 <= dt.year <= 2100:
+                    return dt.strftime('%Y-%m-%d')
+            except ValueError:
+                continue
+
+        # If no format matched, try to extract year-month-day using regex
+        # This helps catch edge cases like "Date: November 17, 2025" where prefix wasn't stripped
+        date_pattern = r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})'
+        match = re.search(date_pattern, date_str_clean)
+        if match:
+            year, month, day = match.groups()
+            try:
+                dt = datetime(int(year), int(month), int(day))
+                if 1900 <= dt.year <= 2100:
+                    return dt.strftime('%Y-%m-%d')
+            except ValueError:
+                pass
+
+        # Return original if we couldn't parse but it looks date-like
+        logger.debug(f"Could not parse date format: {date_str_clean}")
+        return date_str_clean
+
+    except Exception as e:
+        logger.debug(f"Error validating date '{date_str}': {e}")
+        return str(date_str).strip()
+
+
+def validate_amount(amount_str: str) -> Optional[float]:
+    """
+    Validate and parse monetary amounts
+    Returns float or None
+    """
+    try:
+        # Remove currency symbols and commas
+        cleaned = re.sub(r'[,$€£¥]', '', str(amount_str))
+        cleaned = cleaned.strip()
+
+        # Parse float
+        amount = float(cleaned)
+        return round(amount, 2)
+
+    except (ValueError, TypeError):
+        return None
+
+
+def calculate_extraction_confidence(fields: Dict[str, Any], expected_fields: List[str]) -> float:
+    """
+    Calculate confidence score based on fields extracted
+    """
+    if not expected_fields:
+        return 0.0
+
+    extracted_count = len([v for v in fields.values() if v is not None])
+    confidence = extracted_count / len(expected_fields)
+
+    return round(confidence, 2)
+
+
+async def extract_entities(text: str, models: Dict[str, Any]) -> Dict[str, List[str]]:
+    """
+    Extract named entities from document text using Llama
+
+    Returns:
+        Dictionary with entity types and lists of found entities
+    """
+    try:
+        llama = models.get('llama')
+        if llama is None:
+            from app.models.loader import load_llama_model
+            llama = load_llama_model()
+            models['llama'] = llama
+
+        if llama is None:
+            return {
+                'companies': [],
+                'people': [],
+                'dates': [],
+                'amounts': [],
+                'addresses': [],
+                'emails': [],
+                'phone_numbers': []
+            }
+
+        prompt = f"""Extract all named entities from this document. Return a JSON object with lists of entities.
+
+Document text:
+{text[:1500]}
+
+Return JSON format:
+{{
+  "companies": ["Company A", "Company B"],
+  "people": ["John Smith", "Jane Doe"],
+  "dates": ["2025-11-17", "2025-12-17"],
+  "amounts": [1000.00, 2500.50],
+  "addresses": ["123 Main St, New York, NY"],
+  "emails": ["email@example.com"],
+  "phone_numbers": ["555-1234"]
+}}
+
+JSON:"""
+
+        # Read entity extraction settings from Control Panel
+        from app.api.config_endpoints import get_runtime_config
+        config = get_runtime_config()
+        entity_tokens = config.get('ENTITY_EXTRACTION_MAX_TOKENS', 400)
+        entity_temp = config.get('ENTITY_EXTRACTION_TEMPERATURE', 0.1)
+        response = llama(
+            prompt,
+            max_tokens=entity_tokens,  # Read from Control Panel
+            temperature=entity_temp,  # Read from Control Panel
+            top_p=0.9
+        )
+
+        raw_output = response['choices'][0]['text'].strip()
+
+        # Parse entities
+        entities = parse_extraction_output(raw_output, [
+            'companies', 'people', 'dates', 'amounts',
+            'addresses', 'emails', 'phone_numbers'
+        ])
+
+        # Ensure all keys exist with empty lists
+        default_entities = {
+            'companies': [],
+            'people': [],
+            'dates': [],
+            'amounts': [],
+            'addresses': [],
+            'emails': [],
+            'phone_numbers': []
+        }
+
+        # Update with extracted entities
+        for key in default_entities.keys():
+            if key in entities and isinstance(entities[key], list):
+                default_entities[key] = entities[key]
+
+        logger.info(f"✓ Extracted entities: {sum(len(v) for v in default_entities.values())} total")
+
+        return default_entities
+
+    except Exception as e:
+        logger.error(f"Error extracting entities: {e}", exc_info=True)
+        return {
+            'companies': [],
+            'people': [],
+            'dates': [],
+            'amounts': [],
+            'addresses': [],
+            'emails': [],
+            'phone_numbers': []
+        }
+
+
+async def extract_with_prompt(
+    text: str,
+    doc_type: str,
+    models: Dict[str, Any],
+    prompt_data: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Extract structured data using dynamic prompt from Control Panel
+    
+    Args:
+        text: Document text content
+        doc_type: Document type
+        models: Loaded models dictionary
+        prompt_data: Prompt configuration from Control Panel with:
+            - prompt: Prompt text with variables already replaced
+            - llm_config: LLM configuration (maxTokens, temperature, etc.)
+            - metadata: Prompt metadata
+    
+    Returns:
+        Dictionary with extracted fields and metadata
+    """
+    try:
+        # Get Llama model
+        llama = models.get('llama')
+        if llama is None:
+            from app.models.loader import load_llama_model
+            llama = load_llama_model()
+            models['llama'] = llama
+
+        if llama is None:
+            logger.error("Llama model not available for extraction")
+            return {
+                'success': False,
+                'error': 'Llama model not available',
+                'extracted_fields': {},
+                'prompt_used': prompt_data['metadata']['name']
+            }
+
+        # Get LLM config from prompt
+        llm_config = prompt_data.get('llm_config', {})
+        max_tokens = llm_config.get('maxTokens', 500)
+        temperature = llm_config.get('temperature', 0.1)
+        top_p = llm_config.get('topP', 0.9)
+        top_k = llm_config.get('topK', 40)
+        
+        prompt_text = prompt_data['prompt']
+        
+        logger.info(f"Extracting with prompt '{prompt_data['metadata']['name']}' "
+                   f"(maxTokens={max_tokens}, temp={temperature})")
+        
+        # Generate extraction
+        try:
+            response = llama(
+                prompt_text,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                stop=llm_config.get('stopSequences', []),
+                echo=False
+            )
+            
+            generated_text = response.get('choices', [{}])[0].get('text', '').strip()
+            
+            # Try to parse as JSON
+            try:
+                # Clean response - remove markdown formatting if present
+                cleaned = generated_text
+                if '```json' in cleaned:
+                    cleaned = cleaned.split('```json')[1].split('```')[0].strip()
+                elif '```' in cleaned:
+                    cleaned = cleaned.split('```')[1].split('```')[0].strip()
+                
+                # Add opening brace if prompt ended with it
+                if not cleaned.startswith('{'):
+                    cleaned = '{' + cleaned
+                
+                extracted_data = json.loads(cleaned)
+                
+                logger.info(f"✓ Successfully extracted {len(extracted_data)} fields using dynamic prompt")
+                
+                return {
+                    'success': True,
+                    'extracted_fields': extracted_data,
+                    'prompt_used': prompt_data['metadata']['name'],
+                    'prompt_priority': prompt_data['metadata']['priority'],
+                    'company_specific': prompt_data['metadata']['company_specific'],
+                    'confidence': 'high',
+                    'llm_config_used': {
+                        'maxTokens': max_tokens,
+                        'temperature': temperature
+                    }
+                }
+                
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse JSON from prompt response: {e}")
+                logger.debug(f"Raw response: {generated_text}")
+                
+                # Return raw text if JSON parsing fails
+                return {
+                    'success': False,
+                    'error': f'JSON parsing failed: {str(e)}',
+                    'raw_response': generated_text,
+                    'extracted_fields': {},
+                    'prompt_used': prompt_data['metadata']['name']
+                }
+                
+        except Exception as llm_error:
+            logger.error(f"LLM generation error: {llm_error}")
+            return {
+                'success': False,
+                'error': f'LLM error: {str(llm_error)}',
+                'extracted_fields': {},
+                'prompt_used': prompt_data['metadata']['name']
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in extract_with_prompt: {e}", exc_info=True)
+        return {
+            'success': False,
+            'error': str(e),
+            'extracted_fields': {},
+            'prompt_used': prompt_data['metadata'].get('name', 'unknown')
+        }
