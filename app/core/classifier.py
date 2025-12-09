@@ -325,16 +325,19 @@ def classify_text(
         # Normalize to probabilities (softmax)
         max_sim = max(similarities.values())
         similarities_exp = {
-            k: np.exp(v - max_sim) for k, v in similarities.items()
+            k: float(np.exp(v - max_sim)) for k, v in similarities.items()
         }
         sum_exp = sum(similarities_exp.values())
+        # Convert to native Python float for MongoDB/JSON compatibility
+        # Note: np.exp returns np.float64, division result also np.float64
+        # So we must explicitly convert to Python float
         probabilities = {
-            k: v / sum_exp for k, v in similarities_exp.items()
+            k: float(v / sum_exp) for k, v in similarities_exp.items()
         }
         
         # Get top label
         top_label = max(probabilities, key=probabilities.get)
-        top_score = probabilities[top_label]
+        top_score = float(probabilities[top_label])
         
         # Get minimum confidence threshold from Control Panel config
         from app.api.config_endpoints import get_runtime_config

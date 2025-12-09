@@ -19,6 +19,29 @@ _table_engine = None
 _is_v3 = False  # Track which version we're using
 
 
+def convert_numpy_types(obj):
+    """
+    Recursively convert NumPy types to Python native types for MongoDB/JSON compatibility.
+    
+    MongoDB/BSON cannot serialize numpy.float32, numpy.float64, numpy.int32, etc.
+    This function converts them to native Python float/int.
+    """
+    if isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    else:
+        return obj
+
+
 def get_table_engine():
     """Get or initialize the PPStructure engine for table extraction"""
     global _table_engine, _is_v3
@@ -67,41 +90,99 @@ def get_table_engine():
 
 
 def run_table_engine(engine, img):
-    """Run table extraction engine with correct API for version"""
+    """Run table extraction engine with correct API for version.
+    
+    Returns results with all NumPy types converted to Python native types
+    for MongoDB/JSON compatibility.
+    
+    Note: PPStructureV3 returns tables in both layout_det_res.boxes AND table_res_list.
+    We prioritize table_res_list (contains HTML/structure) when it has valid data,
+    otherwise fall back to layout_det_res for bounding box information.
+    """
     global _is_v3
     
     if _is_v3:
         # PPStructureV3 uses .predict() and returns generator
+        # IMPORTANT: Enable HTML generation with use_*_table_cells_trans_to_html=True
         results = []
-        for result in engine.predict(img, use_table_recognition=True):
-            # V3 returns dict with 'layout_det_res' containing detected regions
+        for result in engine.predict(
+            img, 
+            use_table_recognition=True,
+            use_wired_table_cells_trans_to_html=True,    # Generate HTML for bordered tables
+            use_wireless_table_cells_trans_to_html=True  # Generate HTML for borderless tables
+        ):
             if isinstance(result, dict):
-                layout = result.get('layout_det_res', {})
-                boxes = layout.get('boxes', [])
-                for box_info in boxes:
-                    if box_info.get('label', '').lower() == 'table':
-                        # Extract table info
-                        table_result = {
-                            'type': 'table',
-                            'bbox': box_info.get('coordinate', box_info.get('bbox', [])),
-                            'score': box_info.get('score', 0.0),
-                            'res': {'html': box_info.get('table_html', box_info.get('html', ''))}
-                        }
-                        results.append(table_result)
+                # DEBUG: Log what PPStructure returns
+                logger.info(f"PPStructureV3 result keys: {result.keys()}")
                 
-                # Also check table_res_list directly
+                # Get both sources
                 table_res = result.get('table_res_list', [])
-                for table in table_res:
-                    results.append({
-                        'type': 'table',
-                        'bbox': table.get('bbox', []),
-                        'score': table.get('score', 0.9),
-                        'res': {'html': table.get('html', '')}
-                    })
+                layout = result.get('layout_det_res', {})
+                layout_boxes = layout.get('boxes', []) if layout else []
+                
+                logger.info(f"  table_res_list count: {len(table_res)}")
+                logger.info(f"  layout_det_res boxes count: {len(layout_boxes)}")
+                
+                # DEBUG: Log table_res content
+                for i, t in enumerate(table_res):
+                    logger.info(f"  table_res[{i}] keys: {t.keys() if isinstance(t, dict) else type(t)}")
+                    if isinstance(t, dict):
+                        logger.info(f"    bbox: {t.get('bbox')}")
+                        # PPStructureV3 uses 'pred_html' not 'html'
+                        html_content = t.get('pred_html', t.get('html', ''))
+                        logger.info(f"    html/pred_html length: {len(html_content) if html_content else 0}")
+                        logger.info(f"    html/pred_html preview: {html_content[:100] if html_content else 'NONE'}...")
+                
+                # Filter layout boxes to only tables
+                table_layout_boxes = [b for b in layout_boxes if b.get('label', '').lower() == 'table']
+                logger.info(f"  table layout boxes: {len(table_layout_boxes)}")
+                
+                # Strategy: Use table_res_list if it has valid tables with HTML
+                # Otherwise use layout detection for bbox info
+                # Note: PPStructureV3 uses 'pred_html' not 'html'
+                tables_with_html = [t for t in table_res if t.get('pred_html') or t.get('html')]
+                logger.info(f"  tables_with_html count: {len(tables_with_html)}")
+                
+                if tables_with_html:
+                    # Use table recognition results (has HTML structure)
+                    for table in tables_with_html:
+                        raw_bbox = table.get('bbox', [])
+                        # PPStructureV3 uses 'pred_html', fallback to 'html' for compatibility
+                        html_content = table.get('pred_html', table.get('html', ''))
+                        results.append({
+                            'type': 'table',
+                            'bbox': convert_numpy_types(raw_bbox),
+                            'score': float(table.get('score', 0.9)),
+                            'res': {'html': html_content}
+                        })
+                elif table_layout_boxes:
+                    # Fallback: Use layout detection boxes (has bbox but no HTML)
+                    for box_info in table_layout_boxes:
+                        raw_bbox = box_info.get('coordinate', box_info.get('bbox', []))
+                        results.append({
+                            'type': 'table',
+                            'bbox': convert_numpy_types(raw_bbox),
+                            'score': float(box_info.get('score', 0.0)),
+                            'res': {'html': box_info.get('table_html', box_info.get('html', ''))}
+                        })
+                elif table_res:
+                    # table_res exists but without HTML - still include for bbox
+                    for table in table_res:
+                        raw_bbox = table.get('bbox', [])
+                        # PPStructureV3 uses 'pred_html', fallback to 'html'
+                        html_content = table.get('pred_html', table.get('html', ''))
+                        results.append({
+                            'type': 'table',
+                            'bbox': convert_numpy_types(raw_bbox),
+                            'score': float(table.get('score', 0.9)),
+                            'res': {'html': html_content}
+                        })
         return results
     else:
         # Legacy PPStructure is callable directly
-        return engine(img)
+        # Convert results before returning
+        raw_results = engine(img)
+        return convert_numpy_types(raw_results)
 
 
 def extract_tables_from_image(image_path: str, use_llama_validation: bool = True) -> List[Dict[str, Any]]:
@@ -137,10 +218,14 @@ def extract_tables_from_image(image_path: str, use_llama_validation: bool = True
             if item['type'] == 'table':
                 table_count += 1
                 
+                # Extract bbox and convert numpy types to Python native
+                raw_bbox = item.get('bbox', [])
+                bbox = convert_numpy_types(raw_bbox)
+                
                 # Extract table structure
                 table_info = {
                     'table_id': table_count,
-                    'bbox': item.get('bbox', []),  # [x1, y1, x2, y2]
+                    'bbox': bbox,  # [x1, y1, x2, y2] - now Python floats
                     'confidence': float(item.get('score', 0.0)),
                     'html': item.get('res', {}).get('html', ''),
                     'rows': [],
@@ -161,6 +246,9 @@ def extract_tables_from_image(image_path: str, use_llama_validation: bool = True
                 if use_llama_validation and table_info['rows']:
                     logger.info(f"🤖 Validating table {table_count} with LLaMA...")
                     table_info = validate_table_with_llama(table_info)
+                
+                # Final safety: convert any remaining numpy types
+                table_info = convert_numpy_types(table_info)
                 
                 tables.append(table_info)
                 logger.info(f"✓ Extracted table {table_count}: {table_info['structure']}")
@@ -379,8 +467,12 @@ async def extract_tables_from_pdf_pages(rendered_pages: List[np.ndarray], use_ll
                 tables = []
                 for item in result:
                     if item['type'] == 'table':
+                        # Convert bbox numpy types to Python native for MongoDB compatibility
+                        raw_bbox = item.get('bbox', [])
+                        bbox = convert_numpy_types(raw_bbox)
+                        
                         table_info = {
-                            'bbox': item.get('bbox', []),
+                            'bbox': bbox,  # Already converted to Python floats
                             'confidence': float(item.get('score', 0.0)),
                             'html': item.get('res', {}).get('html', ''),
                             'rows': [],
@@ -401,6 +493,9 @@ async def extract_tables_from_pdf_pages(rendered_pages: List[np.ndarray], use_ll
                         if use_llama_validation and table_info['rows']:
                             logger.info(f"🤖 Validating page {page_num} table with LLaMA...")
                             table_info = validate_table_with_llama(table_info)
+                        
+                        # Final safety: convert any remaining numpy types
+                        table_info = convert_numpy_types(table_info)
                         
                         tables.append(table_info)
                 

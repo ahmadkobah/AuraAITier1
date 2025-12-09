@@ -16,6 +16,7 @@ import logging
 import os
 import asyncio
 import requests
+import numpy as np
 from typing import Dict, Any, Optional, Union
 from datetime import datetime
 import torch
@@ -26,6 +27,29 @@ from app.api.config_endpoints import get_runtime_config
 from app.models.loader import _MAX_GPU_MEMORY_MB
 
 logger = logging.getLogger("pipeline_worker")
+
+
+def convert_numpy_for_mongodb(obj):
+    """
+    Recursively convert NumPy types to Python native types for MongoDB/BSON.
+    
+    MongoDB cannot serialize numpy.float32, numpy.float64, numpy.int32, etc.
+    This function ensures all data is JSON/BSON serializable.
+    """
+    if isinstance(obj, dict):
+        return {k: convert_numpy_for_mongodb(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_for_mongodb(item) for item in obj]
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    else:
+        return obj
 
 
 def is_llamafile_healthy() -> bool:
@@ -465,12 +489,15 @@ async def run_full_ai_pipeline(
                     try:
                         img.save(tmp_path)
                         # Use YOLOv8n to detect boxes on this page image
-                        yolo_boxes = detect_signature_boxes_yolo(img, models)
+                        yolo_results = detect_signature_boxes_yolo(img, models, return_images=False)
                         
                         # Only run TrOCR if YOLO actually detected signature regions
-                        if not yolo_boxes:
+                        if not yolo_results:
                             logger.debug(f"  No signature regions detected on page {p+1}")
                             continue
+                        
+                        # Extract boxes in old format for TrOCR compatibility
+                        yolo_boxes = [r['box'] for r in yolo_results]
                         
                         # Run TrOCR on detected box
                         sig_result = ocr_signature(tmp_path, models, boxes=yolo_boxes)
@@ -498,6 +525,31 @@ async def run_full_ai_pipeline(
                                 logger.debug(f"Cleaned up temp file: {tmp_path}")
                         except Exception as e:
                             logger.warning(f"Failed to cleanup temp file {tmp_path}: {e}")
+                
+                # Fallback: Text-based signature detection if YOLO didn't find anything
+                if not signature_found and doc_text:
+                    # Look for signature-related patterns in OCR text
+                    import re
+                    # Common signature indicators
+                    sig_patterns = [
+                        r'(?:Authorized\s+)?Signature[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+                        r'Signed\s*(?:by)?[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+                        r'Name[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)(?:\s+Terms|\s+Payment|\s*$)',
+                        r'(?:Invoice\s+)?Total\s+([A-Z][a-z]+(?:\s+[A-Z]?[a-z]+)*)\s+Terms',  # "Total John Smith Terms"
+                    ]
+                    
+                    for pattern in sig_patterns:
+                        match = re.search(pattern, doc_text, re.IGNORECASE)
+                        if match:
+                            potential_sig = match.group(1).strip()
+                            # Validate it looks like a name (2-4 words, proper case)
+                            words = potential_sig.split()
+                            if 2 <= len(words) <= 4 and all(w[0].isupper() for w in words if w):
+                                signature_found = True
+                                signature_text = potential_sig
+                                signature_confidence = 0.6  # Lower confidence for text-based
+                                logger.info(f"  ✓ Text-based signature found: '{signature_text}'")
+                                break
                 
                 # Clear GPU after signature detection
                 if torch.cuda.is_available():
@@ -560,15 +612,42 @@ async def run_full_ai_pipeline(
             ENABLE_TABLE_EXTRACTION = config.get('ENABLE_TABLE_EXTRACTION', True)
             if ENABLE_TABLE_EXTRACTION:
                 from app.services.table_extraction import extract_tables_from_pdf_pages, extract_tables_from_text_with_llama
+                import numpy as np
+                
+                # Get page images for this logical document
+                start_page = logical_doc.get('start_page', 0)
+                end_page = logical_doc.get('end_page', 0)
+                
+                logger.info(f"  📊 Table extraction: start_page={start_page}, end_page={end_page}, images available={len(images)}")
+                
+                # Extract page images as numpy arrays for table extraction
+                page_images = []
+                for p in range(start_page, min(end_page + 1, len(images))):
+                    img = images[p]
+                    # Convert PIL Image to numpy array if needed
+                    if hasattr(img, 'convert'):
+                        np_img = np.array(img.convert('RGB'))
+                        page_images.append(np_img)
+                        logger.info(f"    Page {p+1}: converted PIL to numpy {np_img.shape}")
+                    else:
+                        page_images.append(np.array(img))
+                        logger.info(f"    Page {p+1}: already numpy {np.array(img).shape}")
+                
+                logger.info(f"  📊 Prepared {len(page_images)} page images for table extraction")
                 
                 # Try visual table extraction if page images available
-                if logical_doc.get('pages') and len(logical_doc.get('pages', [])) > 0:
-                    logger.info(f"  Extracting tables from {len(logical_doc['pages'])} pages...")
+                if page_images:
+                    logger.info(f"  Extracting tables from {len(page_images)} pages (pages {start_page+1}-{end_page+1})...")
                     try:
                         page_tables = await asyncio.wait_for(
-                            extract_tables_from_pdf_pages(logical_doc['pages']),
+                            extract_tables_from_pdf_pages(page_images),
                             timeout=90.0
                         )
+                        logger.info(f"  📊 extract_tables_from_pdf_pages returned: {len(page_tables)} pages with tables")
+                        for pn, pt_list in page_tables.items():
+                            logger.info(f"    Page {pn}: {len(pt_list)} tables")
+                            for ti, t in enumerate(pt_list):
+                                logger.info(f"      Table {ti}: html={len(t.get('html',''))} chars, rows={len(t.get('rows',[]))}")
                     except asyncio.TimeoutError:
                         logger.warning("  Table extraction timed out after 90s")
                         page_tables = {}
@@ -676,14 +755,18 @@ async def run_full_ai_pipeline(
         # Step 3: Save results to MongoDB (optional based on config)
         if ENABLE_MONGODB_STORAGE:
             logger.info(f"Saving {len(processed_data)} processed documents to MongoDB...")
+            
+            # Convert any NumPy types to Python native for MongoDB compatibility
+            processed_data_clean = convert_numpy_for_mongodb(processed_data)
+            
             documents_collection.update_one(
                 {'_id': doc_id},
                 {
                     '$set': {
                         'status': 'COMPLETE',
-                        'processed_data': processed_data,
+                        'processed_data': processed_data_clean,
                         'processing_completed': datetime.utcnow(),
-                        'document_count': len(processed_data),
+                        'document_count': len(processed_data_clean),
                         'error': None
                     }
                 }

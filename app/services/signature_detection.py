@@ -4,23 +4,65 @@ Detects signature regions using lightweight YOLOv8n object detector
 """
 
 import logging
-from typing import List, Tuple
+import base64
+import io
+from typing import List, Tuple, Dict, Any, Optional
 from PIL import Image
 import numpy as np
 
 logger = logging.getLogger("yolo_signature")
 
 
-def detect_signature_boxes(image: Image.Image, models) -> List[Tuple[int, int, int, int]]:
+def crop_signature_region(image: Image.Image, box: Tuple[int, int, int, int], padding: int = 10) -> Optional[str]:
+    """
+    Crop a signature region from the image and return as base64.
+    
+    Args:
+        image: PIL Image to crop from
+        box: (x, y, w, h) bounding box
+        padding: Extra pixels to include around the box
+        
+    Returns:
+        Base64 encoded PNG image string, or None if failed
+    """
+    try:
+        x, y, w, h = box
+        img_width, img_height = image.size
+        
+        # Add padding but stay within image bounds
+        x1 = max(0, x - padding)
+        y1 = max(0, y - padding)
+        x2 = min(img_width, x + w + padding)
+        y2 = min(img_height, y + h + padding)
+        
+        # Crop the region
+        cropped = image.crop((x1, y1, x2, y2))
+        
+        # Convert to base64
+        buffer = io.BytesIO()
+        cropped.save(buffer, format='PNG', optimize=True)
+        buffer.seek(0)
+        base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        
+        logger.debug(f"Cropped signature region: {w}x{h} -> base64 length: {len(base64_image)}")
+        return base64_image
+        
+    except Exception as e:
+        logger.error(f"Error cropping signature region: {e}")
+        return None
+
+
+def detect_signature_boxes(image: Image.Image, models, return_images: bool = False) -> List[Dict[str, Any]]:
     """
     Use YOLOv8n to detect signature-like regions.
     
     Args:
         image: PIL Image to detect signatures in
         models: Global models dictionary containing 'yolo' model
+        return_images: If True, include cropped base64 images for each box
         
     Returns:
-        List of (x, y, w, h) tuples representing signature bounding boxes
+        List of dicts with 'box' (x, y, w, h), 'confidence', and optionally 'image' (base64)
     """
     from app.models.loader import load_yolo_model
     
@@ -92,7 +134,18 @@ def detect_signature_boxes(image: Image.Image, models) -> List[Tuple[int, int, i
                     
                     # Validate box dimensions
                     if w > 0 and h > 0:
-                        boxes.append((x1, y1, w, h))
+                        box_data = {
+                            'box': (x1, y1, w, h),
+                            'confidence': float(conf)
+                        }
+                        
+                        # Crop and encode signature image if requested
+                        if return_images:
+                            base64_img = crop_signature_region(image, (x1, y1, w, h))
+                            if base64_img:
+                                box_data['image'] = base64_img
+                        
+                        boxes.append(box_data)
                         logger.debug(f"Detected signature box {i+1}: ({x1}, {y1}, {w}, {h}) conf={conf:.2f}")
         
         logger.info(f"YOLOv8n detected {len(boxes)} signature(s)")

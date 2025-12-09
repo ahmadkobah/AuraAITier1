@@ -26,7 +26,13 @@ EXTRACTION_SCHEMAS = {
             'tax_amount',
             'total_amount',
             'currency',
-            'payment_terms'
+            'payment_terms',
+            'bank_name',
+            'account_name',
+            'account_number',
+            'routing_number',
+            'swift_code',
+            'iban'
         ]
     },
     'contract': {
@@ -446,7 +452,7 @@ Return JSON with extracted values:
         # Generate extraction with sufficient tokens for all fields (read from Control Panel)
         from app.api.config_endpoints import get_runtime_config
         config = get_runtime_config()
-        extraction_tokens = config.get('EXTRACTION_MAX_TOKENS', 500)
+        extraction_tokens = config.get('EXTRACTION_MAX_TOKENS', 600)
         extraction_temp = config.get('EXTRACTION_TEMPERATURE', 0.1)
         response = llama(
             prompt,
