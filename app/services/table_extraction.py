@@ -9,8 +9,24 @@ import cv2
 import json
 import numpy as np
 import os
+import sys
 import requests
 from typing import Dict, List, Any, Optional
+
+# Fix for "I/O operation on closed file" with colorama in background tasks
+# This happens when PaddleX logs to stdout after HTTP response is sent
+try:
+    import colorama
+    # Reinitialize colorama to handle closed streams gracefully
+    colorama.deinit()
+    colorama.init(autoreset=True, wrap=False)
+except ImportError:
+    pass
+
+# Suppress PaddleX verbose logging at module load time
+logging.getLogger('paddlex').setLevel(logging.WARNING)
+logging.getLogger('paddleocr').setLevel(logging.WARNING)
+logging.getLogger('ppocr').setLevel(logging.WARNING)
 
 logger = logging.getLogger("table_extraction")
 
@@ -49,6 +65,18 @@ def get_table_engine():
     if _table_engine is None:
         try:
             logger.info("Initializing PPStructure for table extraction...")
+            
+            # Suppress PaddleX/PaddleOCR logging to prevent "I/O operation on closed file" errors
+            # when running in background tasks (colorama + uvicorn + Python 3.13 issue)
+            import sys
+            import warnings
+            warnings.filterwarnings('ignore', category=DeprecationWarning)
+            warnings.filterwarnings('ignore', category=UserWarning)
+            
+            # Suppress paddlex logging
+            logging.getLogger('paddlex').setLevel(logging.ERROR)
+            logging.getLogger('paddleocr').setLevel(logging.ERROR)
+            logging.getLogger('ppocr').setLevel(logging.ERROR)
             
             # Try PPStructureV3 first (newer API)
             try:

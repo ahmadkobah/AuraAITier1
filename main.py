@@ -57,6 +57,8 @@ import sys
 import subprocess
 import time
 import logging
+import signal
+import atexit
 from pathlib import Path
 
 # ========================
@@ -259,16 +261,51 @@ if __name__ == "__main__":
     print("   • Llamafile: http://127.0.0.1:8080")
     print("\n⌨️  Press Ctrl+C to stop\n")
     
+    def cleanup_llamafile():
+        """Kill all LlamaFile processes to free GPU memory."""
+        print("\n🧹 Cleaning up LlamaFile...")
+        if llamafile_process:
+            try:
+                llamafile_process.terminate()
+                llamafile_process.wait(timeout=5)
+                print("✅ LlamaFile terminated (owned process)")
+            except Exception as e:
+                print(f"⚠️ Error terminating LlamaFile: {e}")
+        
+        # Always try to kill by name as backup (in case we connected to existing instance)
+        try:
+            if sys.platform == 'win32':
+                result = subprocess.run(['taskkill', '/F', '/IM', 'llama-3.2-3b.exe'], 
+                               capture_output=True, timeout=5, text=True)
+                if result.returncode == 0:
+                    print("✅ LlamaFile killed (taskkill)")
+            else:
+                subprocess.run(['pkill', '-f', 'llama-3.2-3b'], 
+                               capture_output=True, timeout=5)
+        except Exception as e:
+            pass  # Process might already be dead
+    
+    # Register cleanup to run on ANY exit (normal, exception, signal)
+    atexit.register(cleanup_llamafile)
+    
+    # Also handle SIGTERM (docker stop, systemctl stop, etc.)
+    def signal_handler(signum, frame):
+        print(f"\n🛑 Received signal {signum}, shutting down...")
+        cleanup_llamafile()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    if sys.platform != 'win32':
+        signal.signal(signal.SIGHUP, signal_handler)
+    
     try:
         import uvicorn
         uvicorn.run(app, host="0.0.0.0", port=9000, log_level="error")
     except KeyboardInterrupt:
-        print("\n\n🛑 Shutting down...")
-        if llamafile_process:
-            llamafile_process.terminate()
-        print("✅ Stopped\n")
+        print("\n\n🛑 Shutting down (Ctrl+C)...")
     except Exception as e:
         print(f"\n❌ Error: {e}\n")
-        if llamafile_process:
-            llamafile_process.terminate()
-        sys.exit(1)
+    finally:
+        # atexit will call cleanup_llamafile, but call it explicitly too for clarity
+        cleanup_llamafile()
+        print("✅ Stopped\n")

@@ -50,16 +50,18 @@ def pdf_to_images(pdf_path: str) -> List[Image.Image]:
         raise
 
 
-def extract_text_from_image(image: Image.Image, paddleocr) -> str:
+def extract_text_from_image(image: Image.Image, paddleocr, return_confidence: bool = False):
     """
     Extract text from image using PaddleOCR
     
     Args:
         image: PIL Image object
         paddleocr: PaddleOCR instance
+        return_confidence: If True, return dict with confidence scores
         
     Returns:
-        Extracted text
+        If return_confidence=False: Extracted text (str) - backward compatible
+        If return_confidence=True: Dict with text and confidence scores
     """
     try:
         # Convert PIL image to numpy array
@@ -79,20 +81,22 @@ def extract_text_from_image(image: Image.Image, paddleocr) -> str:
                 result = paddleocr.predict(image_array)
             else:
                 logger.error(f"PaddleOCR object has neither .ocr() nor .predict() method. Available methods: {[m for m in dir(paddleocr) if not m.startswith('_')]}")
-                return ""
+                return "" if not return_confidence else {'text': '', 'avg_confidence': 0.0, 'min_confidence': 0.0}
         except Exception as ocr_error:
             logger.error(f"OCR call failed: {ocr_error}")
-            return ""
+            return "" if not return_confidence else {'text': '', 'avg_confidence': 0.0, 'min_confidence': 0.0}
         
-        # Extract text from result
+        # Extract text and confidence scores from result
         text_lines = []
+        rec_scores = []
         
         if result and len(result) > 0 and result[0]:
             ocr_data = result[0]
             
-            # PaddleOCR 3.3.2+ returns OCRResult dict, not list
+            # PaddleOCR 3.3.2+ returns OCRResult dict with rec_texts and rec_scores
             if isinstance(ocr_data, dict) and 'rec_texts' in ocr_data:
                 text_lines = ocr_data['rec_texts']
+                rec_scores = ocr_data.get('rec_scores', [])  # Capture confidence scores
             else:
                 # Fallback: old format (list of detections)
                 for line in ocr_data:
@@ -100,15 +104,32 @@ def extract_text_from_image(image: Image.Image, paddleocr) -> str:
                         text_part = line[1]
                         if isinstance(text_part, (list, tuple)) and len(text_part) >= 1:
                             text_lines.append(str(text_part[0]))
+                            # Old format: confidence is second element of tuple
+                            if len(text_part) >= 2:
+                                rec_scores.append(float(text_part[1]))
                         elif isinstance(text_part, str):
                             text_lines.append(text_part)
         
         extracted_text = " ".join(text_lines)
-        return extracted_text
+        
+        # Calculate confidence metrics
+        avg_confidence = sum(rec_scores) / len(rec_scores) if rec_scores else 0.5
+        min_confidence = min(rec_scores) if rec_scores else 0.5
+        
+        # Return based on flag (backward compatible)
+        if not return_confidence:
+            return extracted_text
+        else:
+            return {
+                'text': extracted_text,
+                'avg_confidence': avg_confidence,
+                'min_confidence': min_confidence,
+                'word_count': len(text_lines)
+            }
         
     except Exception as e:
         logger.error(f"❌ EXCEPTION in extract_text_from_image: {e}", exc_info=True)
-        return ""
+        return "" if not return_confidence else {'text': '', 'avg_confidence': 0.0, 'min_confidence': 0.0}
 
 
 def split_pdf_and_find_breaks(
@@ -158,14 +179,20 @@ def split_pdf_and_find_breaks(
     if paddleocr is None:
         raise ValueError("PaddleOCR model not loaded")
     
-    # Extract text and embeddings for each page
+    # Extract text, embeddings, and confidence for each page
     page_texts = []
     page_embeddings = []
+    page_confidences = []  # Store OCR confidence per page
     
     logger.info(f"Extracting text from {len(images)} pages...")
     for idx, image in enumerate(images):
-        text = extract_text_from_image(image, paddleocr)
+        ocr_result = extract_text_from_image(image, paddleocr, return_confidence=True)
+        text = ocr_result['text']
         page_texts.append(text)
+        page_confidences.append({
+            'avg_confidence': ocr_result['avg_confidence'],
+            'min_confidence': ocr_result['min_confidence']
+        })
         if (idx + 1) % 3 == 0:
             logger.info(f"  Progress: {idx + 1}/{len(images)} pages")
         
@@ -220,6 +247,15 @@ def split_pdf_and_find_breaks(
                 # Convert PIL Image to numpy array for PPStructure
                 doc_page_images.append(np.array(images[page_idx]))
         
+        # Calculate aggregate OCR confidence for this logical document
+        doc_confidences = page_confidences[start_page:end_page]
+        if doc_confidences:
+            avg_ocr_conf = sum(c['avg_confidence'] for c in doc_confidences) / len(doc_confidences)
+            min_ocr_conf = min(c['min_confidence'] for c in doc_confidences)
+        else:
+            avg_ocr_conf = 0.5
+            min_ocr_conf = 0.5
+        
         logical_documents.append({
             'doc_num': doc_num,
             'start_page': start_page,
@@ -228,7 +264,11 @@ def split_pdf_and_find_breaks(
             'page_count': end_page - start_page,
             'embedding': doc_embedding.tolist(),
             'confidence': 0.85,  # Placeholder; could be computed from similarity scores
-            'pages': doc_page_images  # Page images as numpy arrays for table extraction
+            'pages': doc_page_images,  # Page images as numpy arrays for table extraction
+            'ocr_confidence': {  # NEW: OCR confidence for smart routing
+                'avg_confidence': avg_ocr_conf,
+                'min_confidence': min_ocr_conf
+            }
         })
     
     logger.info(f"✓ Split PDF into {len(logical_documents)} logical documents")
@@ -522,6 +562,69 @@ Response:"""
             'validated': False,
             'llama_override': False
         }
+
+
+def extract_text_basic(pdf_file_path: str, models: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract text from entire PDF without splitting.
+    Used when ENABLE_PDF_SPLITTING is disabled.
+    
+    Args:
+        pdf_file_path: Path to PDF file
+        models: Dictionary containing 'paddleocr' model
+        
+    Returns:
+        Dict with:
+            - 'text': Concatenated text from all pages
+            - 'ocr_confidence': {'avg_confidence': float, 'min_confidence': float}
+    """
+    from pdf2image import convert_from_path
+    import os
+    
+    poppler_path = os.getenv('POPPLER_PATH', r"C:\Users\Ahmad\poppler\poppler-24.08.0\Library\bin")
+    
+    # Convert PDF to images
+    try:
+        images = convert_from_path(
+            pdf_file_path,
+            dpi=200,
+            poppler_path=poppler_path if os.path.exists(poppler_path) else None
+        )
+    except Exception as e:
+        logger.error(f"Failed to convert PDF to images: {e}")
+        return {'text': '', 'ocr_confidence': {'avg_confidence': 0.0, 'min_confidence': 0.0}}
+    
+    # Get PaddleOCR model
+    paddleocr = models.get('paddleocr') or models.get('paddle_ocr')
+    if paddleocr is None:
+        logger.error("PaddleOCR model not found in models dictionary")
+        return {'text': '', 'ocr_confidence': {'avg_confidence': 0.0, 'min_confidence': 0.0}}
+    
+    # Extract text and confidence from each page
+    all_text = []
+    all_confidences = []
+    
+    for i, img in enumerate(images):
+        try:
+            result = extract_text_from_image(img, paddleocr, return_confidence=True)
+            if result['text']:
+                all_text.append(result['text'])
+                all_confidences.append(result['avg_confidence'])
+        except Exception as e:
+            logger.warning(f"Failed to extract text from page {i+1}: {e}")
+            continue
+    
+    # Calculate aggregate confidence
+    avg_conf = sum(all_confidences) / len(all_confidences) if all_confidences else 0.5
+    min_conf = min(all_confidences) if all_confidences else 0.5
+    
+    return {
+        'text': " ".join(all_text),
+        'ocr_confidence': {
+            'avg_confidence': avg_conf,
+            'min_confidence': min_conf
+        }
+    }
 
 
 # DEPRECATED: Legacy Florence-2 signature detection (not used in current pipeline)

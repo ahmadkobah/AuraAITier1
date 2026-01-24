@@ -1,25 +1,82 @@
 """
 OCR Validation Module
 Uses Llama 3.2 3B to validate and improve OCR output quality
+Supports Smart OCR Routing with 4 tiers: SKIP, LIGHT, FULL, REVIEW
 """
 
 import logging
 import re
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 logger = logging.getLogger("ocr_validation")
 
 
+def apply_regex_fixes(text: str) -> Tuple[str, int]:
+    """
+    Apply common OCR error fixes using regex patterns.
+    Used for LIGHT validation tier - fast fixes without LLaMA.
+    
+    Returns:
+        Tuple of (corrected_text, number_of_fixes)
+    """
+    fixes_made = 0
+    result = text
+    
+    # Common OCR error patterns: (pattern, replacement, description)
+    patterns = [
+        # 0 (zero) → O (letter) when surrounded by letters
+        (r'(?<=[a-zA-Z])0(?=[a-zA-Z])', 'O', '0→O in word'),
+        # O (letter) → 0 (zero) when surrounded by digits
+        (r'(?<=[0-9])O(?=[0-9])', '0', 'O→0 in number'),
+        # 1 (one) → l (letter) in common words
+        (r'\b1nvoice\b', 'Invoice', '1nvoice→Invoice'),
+        (r'\b1tem\b', 'Item', '1tem→Item'),
+        (r'\bTota1\b', 'Total', 'Tota1→Total'),
+        # 1 (one) → I (letter) at word start before lowercase
+        (r'\b1(?=[a-z])', 'I', '1→I at word start'),
+        # l (letter) → 1 (one) in amounts/numbers
+        (r'(?<=\$)l(?=[0-9])', '1', 'l→1 after $'),
+        (r'(?<=[0-9])l(?=[0-9])', '1', 'l→1 in number'),
+        # rn → m (common OCR error)
+        (r'(?<=[a-z])rn(?=[a-z])', 'm', 'rn→m'),
+        # 5 ↔ S fixes
+        (r'\b5ale\b', 'Sale', '5ale→Sale'),
+        (r'\b5ervice\b', 'Service', '5ervice→Service'),
+        # 8 ↔ B fixes
+        (r'\b8ank\b', 'Bank', '8ank→Bank'),
+        # Common date fixes
+        (r'(?<=[0-9])/O(?=[0-9])', '/0', '/O→/0 in date'),
+        (r'(?<=[0-9])-O(?=[0-9])', '-0', '-O→-0 in date'),
+    ]
+    
+    for pattern, replacement, desc in patterns:
+        new_result, count = re.subn(pattern, replacement, result, flags=re.IGNORECASE)
+        if count > 0:
+            fixes_made += count
+            logger.debug(f"  Regex fix: {desc} ({count}x)")
+            result = new_result
+    
+    return result, fixes_made
+
+
 async def validate_ocr_quality(
     ocr_text: str,
-    models: Dict[str, Any]
+    models: Dict[str, Any],
+    ocr_confidence: Optional[Dict[str, float]] = None
 ) -> Dict[str, Any]:
     """
-    Validate OCR quality and correct common errors using Llama
+    Validate OCR quality using Smart Routing based on PaddleOCR confidence scores.
+    
+    Routing Tiers:
+    - SKIP (≥95%): High confidence, no validation needed
+    - LIGHT (75-94%): Medium confidence, apply regex fixes only
+    - FULL (50-74%): Low confidence, full LLaMA validation
+    - REVIEW (<50%): Very poor, flag for manual review
 
     Args:
         ocr_text: Raw text extracted by PaddleOCR
         models: Loaded models dictionary
+        ocr_confidence: Dict with 'avg_confidence' and 'min_confidence' from PaddleOCR
 
     Returns:
         {
@@ -27,26 +84,83 @@ async def validate_ocr_quality(
             'quality_score': float,
             'issues_found': [str],
             'corrections_made': int,
-            'confidence': float
+            'confidence': float,
+            'routing_tier': str  # 'skip', 'light', 'full', or 'review'
         }
     """
     try:
-        # Quick quality assessment
-        initial_quality = assess_text_quality(ocr_text)
-
-        # If quality is already very high, skip Llama validation (read threshold from Control Panel)
+        # Get routing thresholds from config
         from app.api.config_endpoints import get_runtime_config
         config = get_runtime_config()
+        
         skip_threshold = config.get('OCR_QUALITY_SKIP_THRESHOLD', 0.95)
-        if initial_quality >= skip_threshold:
-            logger.info(f"OCR quality high ({initial_quality:.2f}), skipping validation (threshold: {skip_threshold})")
+        medium_threshold = config.get('OCR_ROUTING_MEDIUM_THRESHOLD', 0.75)
+        low_threshold = config.get('OCR_ROUTING_LOW_THRESHOLD', 0.50)
+        
+        # Get actual OCR confidence from PaddleOCR (if provided)
+        if ocr_confidence:
+            avg_conf = ocr_confidence.get('avg_confidence', 0.0)
+            min_conf = ocr_confidence.get('min_confidence', 0.0)
+        else:
+            # Fallback to heuristic assessment if no confidence provided
+            avg_conf = assess_text_quality(ocr_text)
+            min_conf = avg_conf
+        
+        # ==========================================
+        # TIER 1: SKIP (confidence ≥ skip_threshold)
+        # ==========================================
+        if avg_conf >= skip_threshold:
+            logger.info(f"🟢 OCR confidence {avg_conf:.0%} ≥ {skip_threshold:.0%} → SKIP validation")
             return {
                 'corrected_text': ocr_text,
-                'quality_score': initial_quality,
+                'quality_score': avg_conf,
                 'issues_found': [],
                 'corrections_made': 0,
-                'confidence': 0.99
+                'confidence': 0.99,
+                'routing_tier': 'skip'
             }
+        
+        # ==========================================
+        # TIER 2: LIGHT (confidence ≥ medium_threshold)
+        # ==========================================
+        if avg_conf >= medium_threshold:
+            logger.info(f"🟡 OCR confidence {avg_conf:.0%} → LIGHT validation (regex fixes)")
+            corrected_text, fixes_made = apply_regex_fixes(ocr_text)
+            
+            return {
+                'corrected_text': corrected_text,
+                'quality_score': avg_conf,
+                'issues_found': [f'{fixes_made} regex fixes applied'] if fixes_made > 0 else [],
+                'corrections_made': fixes_made,
+                'confidence': 0.90,
+                'routing_tier': 'light'
+            }
+        
+        # ==========================================
+        # TIER 4: REVIEW (confidence < low_threshold)
+        # ==========================================
+        if avg_conf < low_threshold:
+            logger.warning(f"🔴 OCR confidence {avg_conf:.0%} < {low_threshold:.0%} → FLAG for manual review")
+            # Still apply regex fixes as a best effort
+            corrected_text, fixes_made = apply_regex_fixes(ocr_text)
+            
+            return {
+                'corrected_text': corrected_text,
+                'quality_score': avg_conf,
+                'issues_found': ['Very low OCR confidence - manual review recommended'],
+                'corrections_made': fixes_made,
+                'confidence': avg_conf,
+                'routing_tier': 'review',
+                'requires_review': True
+            }
+        
+        # ==========================================
+        # TIER 3: FULL (confidence between low and medium)
+        # ==========================================
+        logger.info(f"🟠 OCR confidence {avg_conf:.0%} → FULL LLaMA validation")
+        
+        # Quick quality assessment (heuristic)
+        initial_quality = assess_text_quality(ocr_text)
 
         # Get Llama model
         llama = models.get('llama')
@@ -157,7 +271,8 @@ Corrected text:"""
             'quality_score': final_quality,
             'issues_found': issues,
             'corrections_made': corrections_made,
-            'confidence': 0.85 if corrections_made > 0 else 0.95
+            'confidence': 0.85 if corrections_made > 0 else 0.95,
+            'routing_tier': 'full'
         }
 
     except Exception as e:
@@ -167,13 +282,18 @@ Corrected text:"""
             'quality_score': 0.5,
             'issues_found': [str(e)],
             'corrections_made': 0,
-            'confidence': 0.5
+            'confidence': 0.5,
+            'routing_tier': 'error'
         }
 
 
 def assess_text_quality(text: str) -> float:
     """
     Quick heuristic assessment of text quality (0.0 - 1.0)
+    
+    NOTE: This is a FALLBACK when PaddleOCR confidence is not available.
+    It should be CONSERVATIVE (return lower scores) to trigger FULL validation
+    when unsure, rather than accidentally skipping validation.
 
     Checks:
     - Ratio of alphabetic characters
@@ -184,14 +304,18 @@ def assess_text_quality(text: str) -> float:
     if not text or len(text) < 10:
         return 0.0
 
-    score = 1.0
+    # Start at 0.7 (not 1.0) - be conservative when using heuristics
+    # This ensures we don't skip validation just because heuristics look OK
+    score = 0.7
 
-    # Check 1: Alphabetic character ratio
+    # Check 1: Alphabetic character ratio (boost score if good)
     alpha_ratio = sum(c.isalpha() or c.isspace() for c in text) / len(text)
-    if alpha_ratio < 0.6:
+    if alpha_ratio >= 0.8:
+        score += 0.1
+    elif alpha_ratio < 0.6:
         score -= 0.2
 
-    # Check 2: Unusual character sequences (OCR artifacts)
+    # Check 2: Unusual character sequences (OCR artifacts) - penalize heavily
     unusual_patterns = [
         r'\d[A-Z]{2,}',  # Number followed by uppercase letters
         r'[A-Z]{1}\d[A-Z]{1}',  # Letter-number-letter pattern
@@ -202,13 +326,16 @@ def assess_text_quality(text: str) -> float:
     for pattern in unusual_patterns:
         matches = len(re.findall(pattern, text))
         if matches > 0:
-            score -= min(0.1 * matches, 0.3)
+            score -= min(0.15 * matches, 0.4)  # Heavier penalty
 
-    # Check 3: Common English words presence (simple check)
-    common_words = ['the', 'and', 'to', 'of', 'in', 'for', 'is', 'on', 'that', 'a']
+    # Check 3: Common English/German words presence
+    common_words = ['the', 'and', 'to', 'of', 'in', 'for', 'is', 'on', 'that', 'a',
+                    'der', 'die', 'das', 'und', 'in', 'von', 'für', 'ist', 'mit', 'auf']
     text_lower = text.lower()
     words_found = sum(1 for word in common_words if f' {word} ' in text_lower)
-    if words_found < 2:
+    if words_found >= 4:
+        score += 0.1
+    elif words_found < 2:
         score -= 0.15
 
     # Check 4: Proper sentence structure (capital letter after period)
@@ -216,10 +343,13 @@ def assess_text_quality(text: str) -> float:
     if len(sentences) > 1:
         proper_caps = sum(1 for s in sentences[1:] if s.strip() and s.strip()[0].isupper())
         cap_ratio = proper_caps / max(len(sentences) - 1, 1)
-        if cap_ratio < 0.5:
+        if cap_ratio >= 0.7:
+            score += 0.05
+        elif cap_ratio < 0.5:
             score -= 0.1
 
-    return max(0.0, min(1.0, score))
+    # Cap at 0.85 max for heuristic assessment (never skip validation on heuristics alone)
+    return max(0.0, min(0.85, score))
 
 
 def detect_ocr_issues(text: str) -> List[str]:

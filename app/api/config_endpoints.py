@@ -189,6 +189,10 @@ RUNTIME_CONFIG = {
     "VALIDATION_QUALITY_MAX_TOKENS": int(os.getenv('VALIDATION_QUALITY_MAX_TOKENS', '200')),  # Number/date validation tokens
     "VALIDATION_QUALITY_TEMPERATURE": float(os.getenv('VALIDATION_QUALITY_TEMPERATURE', '0.1')),  # Validation precision
     
+    # Smart OCR Routing Thresholds (2 new)
+    "OCR_ROUTING_MEDIUM_THRESHOLD": float(os.getenv('OCR_ROUTING_MEDIUM_THRESHOLD', '0.75')),  # Light validation if confidence between this and skip threshold
+    "OCR_ROUTING_LOW_THRESHOLD": float(os.getenv('OCR_ROUTING_LOW_THRESHOLD', '0.50')),  # Full LLaMA validation if confidence between this and medium threshold
+    
     # Table Extraction Parameters (3 new)
     "TABLE_EXTRACTION_TIMEOUT": int(os.getenv('TABLE_EXTRACTION_TIMEOUT', '20')),         # HTTP timeout for llamafile
     "TABLE_EXTRACTION_TEMPERATURE": float(os.getenv('TABLE_EXTRACTION_TEMPERATURE', '0.2')),  # Table extraction precision
@@ -267,6 +271,10 @@ class ConfigUpdateRequest(BaseModel):
     OCR_QUALITY_SKIP_THRESHOLD: Optional[float] = None
     VALIDATION_QUALITY_MAX_TOKENS: Optional[int] = None
     VALIDATION_QUALITY_TEMPERATURE: Optional[float] = None
+    
+    # Smart OCR Routing Thresholds (2 new)
+    OCR_ROUTING_MEDIUM_THRESHOLD: Optional[float] = None
+    OCR_ROUTING_LOW_THRESHOLD: Optional[float] = None
     
     # Table Extraction Parameters (3 new)
     TABLE_EXTRACTION_TIMEOUT: Optional[int] = None

@@ -263,14 +263,18 @@ async def run_full_ai_pipeline(
             # Treat entire PDF as single document
             logger.info("⏸️ PDF splitting disabled - treating as single document")
             from app.core.classifier import extract_text_basic
-            full_text = extract_text_basic(pdf_file_path, models)
+            ocr_result = extract_text_basic(pdf_file_path, models)
+            full_text = ocr_result['text']
+            ocr_confidence = ocr_result['ocr_confidence']
+            logger.info(f"  OCR confidence (basic): avg={ocr_confidence['avg_confidence']:.0%}, min={ocr_confidence['min_confidence']:.0%}")
             logical_documents = [{
                 'doc_num': 1,
                 'start_page': 0,
                 'end_page': 0,
                 'page_count': 1,
                 'text': full_text,
-                'embedding': None
+                'embedding': None,
+                'ocr_confidence': ocr_confidence  # Include OCR confidence for smart routing
             }]
 
         # ========================
@@ -390,7 +394,7 @@ async def run_full_ai_pipeline(
                 continue
 
             # 2a. Validate OCR Quality with Llama (optional, with timeout)
-            ocr_validation = {'quality_score': 0.9, 'corrections_made': 0, 'issues_found': []}
+            ocr_validation = {'quality_score': 0.9, 'corrections_made': 0, 'issues_found': [], 'routing_tier': 'skipped'}
             if ENABLE_OCR_VALIDATION:
                 logger.info("  Validating OCR quality...")
                 from app.services.ocr_validation import validate_ocr_quality
@@ -398,14 +402,24 @@ async def run_full_ai_pipeline(
                 # Get timeout from config
                 ocr_timeout = config.get('OCR_VALIDATION_TIMEOUT', 30)
                 
+                # Get OCR confidence from logical_doc for smart routing
+                ocr_confidence = logical_doc.get('ocr_confidence', None)
+                if ocr_confidence:
+                    logger.info(f"  OCR confidence: avg={ocr_confidence.get('avg_confidence', 0):.0%}, min={ocr_confidence.get('min_confidence', 0):.0%}")
+                
                 try:
                     ocr_validation = await asyncio.wait_for(
-                        validate_ocr_quality(doc_text, models),
+                        validate_ocr_quality(doc_text, models, ocr_confidence),
                         timeout=float(ocr_timeout)
                     )
+                    
+                    # Log routing tier
+                    routing_tier = ocr_validation.get('routing_tier', 'unknown')
+                    logger.info(f"  OCR validation tier: {routing_tier}")
+                    
                 except asyncio.TimeoutError:
                     logger.warning(f"  OCR validation timed out after {ocr_timeout}s, using default")
-                    ocr_validation = {'quality_score': 0.5, 'corrections_made': 0, 'issues_found': ['Validation timeout']}
+                    ocr_validation = {'quality_score': 0.5, 'corrections_made': 0, 'issues_found': ['Validation timeout'], 'routing_tier': 'timeout'}
 
                 # Use corrected text if quality improved
                 if ocr_validation.get('corrections_made', 0) > 0:
@@ -766,7 +780,7 @@ async def run_full_ai_pipeline(
                         'status': 'COMPLETE',
                         'processed_data': processed_data_clean,
                         'processing_completed': datetime.utcnow(),
-                        'document_count': len(processed_data_clean),
+                        'document_count': len(processed_data_clean) if processed_data_clean else 0,
                         'error': None
                     }
                 }
