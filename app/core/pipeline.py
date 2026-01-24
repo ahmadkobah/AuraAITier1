@@ -263,18 +263,14 @@ async def run_full_ai_pipeline(
             # Treat entire PDF as single document
             logger.info("⏸️ PDF splitting disabled - treating as single document")
             from app.core.classifier import extract_text_basic
-            ocr_result = extract_text_basic(pdf_file_path, models)
-            full_text = ocr_result['text']
-            ocr_confidence = ocr_result['ocr_confidence']
-            logger.info(f"  OCR confidence (basic): avg={ocr_confidence['avg_confidence']:.0%}, min={ocr_confidence['min_confidence']:.0%}")
+            full_text = extract_text_basic(pdf_file_path, models)
             logical_documents = [{
                 'doc_num': 1,
                 'start_page': 0,
                 'end_page': 0,
                 'page_count': 1,
                 'text': full_text,
-                'embedding': None,
-                'ocr_confidence': ocr_confidence  # Include OCR confidence for smart routing
+                'embedding': None
             }]
 
         # ========================
@@ -780,7 +776,8 @@ async def run_full_ai_pipeline(
                         'status': 'COMPLETE',
                         'processed_data': processed_data_clean,
                         'processing_completed': datetime.utcnow(),
-                        'document_count': len(processed_data_clean) if processed_data_clean else 0,
+                        'document_count': len(
+                            processed_data_clean) if processed_data_clean else 0,
                         'error': None
                     }
                 }
