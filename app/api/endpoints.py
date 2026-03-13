@@ -343,15 +343,18 @@ async def log_requests(request: Request, call_next):
 # CORS Configuration
 # ========================
 
+_CORS_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        'CORS_ORIGINS',
+        'http://localhost:3000,http://localhost:4000,http://localhost:5173,http://localhost:8000',
+    ).split(',')
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "*",  # Allow all origins
-        "http://localhost:3000",  # Control Panel Frontend
-        "http://localhost:4000",  # Control Panel Backend
-        "http://localhost:5173",  # Aura Frontend
-        "http://localhost:8000",  # Aura Backend
-    ],
+    allow_origins=_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
