@@ -2,7 +2,7 @@
 # Source: DocLayNet (IBM) — remapped to 8 project classes
 # Generated for: adaptive-Dokumentenverarbeitung
 
-path: models/yolo/data
+path: C:/Users/Ahmad/OneDrive/Documents/GitHub/adaptive-Dokumentenverarbeitung/models/yolo/data
 train: images/train
 val: images/val
 

@@ -33,6 +33,8 @@ def validate_dataset(data_yaml: str) -> bool:
         cfg = yaml.safe_load(f)
 
     base = cfg.get('path', os.path.dirname(data_yaml))
+    if not os.path.isabs(base):
+        base = os.path.join(os.path.dirname(os.path.abspath(data_yaml)), base)
     train_dir = os.path.join(base, cfg.get('train', 'images/train'))
     val_dir = os.path.join(base, cfg.get('val', 'images/val'))
 
