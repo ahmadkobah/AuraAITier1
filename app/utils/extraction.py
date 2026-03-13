@@ -494,7 +494,7 @@ Return JSON with extracted values:
 def parse_extraction_output(raw_output: str, expected_fields: List[str]) -> Dict[str, Any]:
     """
     Parse Llama's extraction output into structured dictionary
-    Handles various JSON formats and extraction patterns
+    Uses json_repair for robust JSON parsing, with regex fallback
     """
     try:
         # Clean up the raw output
@@ -507,44 +507,42 @@ def parse_extraction_output(raw_output: str, expected_fields: List[str]) -> Dict
             cleaned = re.sub(r'\s*```$', '', cleaned)
         
         # Remove any explanatory text after the JSON
-        # Stop at common explanation markers
         for marker in ['\n\nNote:', '\n\nThe only', '\n\nExplanation:', '\n\nI extracted']:
             if marker in cleaned:
                 cleaned = cleaned.split(marker)[0].strip()
         
-        # Ensure JSON is properly closed
-        # Count braces to ensure balanced
-        open_braces = cleaned.count('{')
-        close_braces = cleaned.count('}')
-        if open_braces > close_braces:
-            cleaned += '}' * (open_braces - close_braces)
-        
-        # Try to parse the cleaned JSON
+        # Try json_repair first (handles malformed JSON robustly)
         try:
-            # Find the JSON object (outermost braces)
-            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                parsed = json.loads(json_str)
-                logger.debug(f"Successfully parsed JSON with {len(parsed)} fields")
+            from json_repair import repair_json
+            repaired = repair_json(cleaned, return_objects=True)
+            if isinstance(repaired, dict):
+                logger.debug(f"json_repair parsed {len(repaired)} fields")
+                return repaired
+        except Exception:
+            pass
+        
+        # Try standard JSON parsing on the extracted JSON block
+        try:
+            json_start = cleaned.find('{')
+            json_end = cleaned.rfind('}') + 1
+            if json_start >= 0 and json_end > json_start:
+                parsed = json.loads(cleaned[json_start:json_end])
+                logger.debug(f"Standard JSON parsed {len(parsed)} fields")
                 return parsed
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON parse failed after cleanup: {e}")
+        except json.JSONDecodeError:
+            pass
         
         # Fallback: Manual parsing with improved regex
         logger.warning("Using manual regex parsing fallback")
         result = {}
         
         for field in expected_fields:
-            # Try multiple patterns to capture the value
             patterns = [
-                # Pattern 1: "field": "value" or "field": value
                 rf'"{field}"\s*:\s*"([^"]*)"',
+                rf'"{field}"\s*:\s*(\[[^\]]*\])',  # Array values
                 rf'"{field}"\s*:\s*([^,}}\s]+)',
-                # Pattern 2: field: "value" or field: value (no quotes on field)
                 rf'{field}\s*:\s*"([^"]*)"',
                 rf'{field}\s*:\s*([^,}}\s]+)',
-                # Pattern 3: 'field': 'value' (single quotes)
                 rf"'{field}'\s*:\s*'([^']*)'",
             ]
             
@@ -552,9 +550,15 @@ def parse_extraction_output(raw_output: str, expected_fields: List[str]) -> Dict
                 match = re.search(pattern, cleaned, re.IGNORECASE)
                 if match:
                     value = match.group(1).strip()
-                    # Skip null placeholders
                     if value.lower() not in ['null', 'none', 'n/a', 'not found', '']:
-                        result[field] = value
+                        # Try to parse array values
+                        if value.startswith('['):
+                            try:
+                                result[field] = json.loads(value)
+                            except json.JSONDecodeError:
+                                result[field] = value
+                        else:
+                            result[field] = value
                     break
         
         logger.debug(f"Manual parsing extracted {len(result)} fields")
@@ -594,8 +598,12 @@ def validate_extracted_fields(fields: Dict[str, Any], doc_type: str) -> Dict[str
 
 def validate_date(date_str: str) -> Optional[str]:
     """
-    Validate and normalize date strings
-    Returns ISO format date or None
+    Validate and normalize date strings with locale-aware parsing.
+    Returns ISO format date or None.
+    
+    Heuristic for ambiguous dates like 03/04/2025:
+    - If first number > 12, it must be day-first (European: dd/mm/yyyy)
+    - Otherwise, try both and prefer the one that seems more reasonable
     """
     try:
         from datetime import datetime
@@ -603,34 +611,57 @@ def validate_date(date_str: str) -> Optional[str]:
 
         date_str_clean = str(date_str).strip()
 
-        # Common date formats - EXPANDED to handle more variations
-        formats = [
+        # Unambiguous formats first (no mm/dd vs dd/mm ambiguity)
+        unambiguous_formats = [
             '%Y-%m-%d',           # 2025-11-17
-            '%m/%d/%Y',           # 11/17/2025
-            '%d/%m/%Y',           # 17/11/2025
             '%B %d, %Y',          # November 17, 2025
             '%b %d, %Y',          # Nov 17, 2025
             '%Y/%m/%d',           # 2025/11/17
-            '%d-%m-%Y',           # 17-11-2025
-            '%d.%m.%Y',           # 17.11.2025
             '%Y.%m.%d',           # 2025.11.17
-            '%B %d %Y',           # November 17 2025 (no comma)
-            '%b %d %Y',           # Nov 17 2025 (no comma)
+            '%B %d %Y',           # November 17 2025
+            '%b %d %Y',           # Nov 17 2025
             '%d %B %Y',           # 17 November 2025
-            '%d %b %Y'            # 17 Nov 2025
+            '%d %b %Y',           # 17 Nov 2025
+            '%d.%m.%Y',           # 17.11.2025 (European convention: dd.mm.yyyy)
         ]
 
-        for fmt in formats:
+        for fmt in unambiguous_formats:
             try:
                 dt = datetime.strptime(date_str_clean, fmt)
-                # Sanity check: year should be reasonable (1900-2100)
                 if 1900 <= dt.year <= 2100:
                     return dt.strftime('%Y-%m-%d')
             except ValueError:
                 continue
 
-        # If no format matched, try to extract year-month-day using regex
-        # This helps catch edge cases like "Date: November 17, 2025" where prefix wasn't stripped
+        # Ambiguous formats: mm/dd/yyyy vs dd/mm/yyyy and mm-dd-yyyy vs dd-mm-yyyy
+        # Use heuristic: if first number > 12, it must be a day
+        slash_match = re.match(r'^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$', date_str_clean)
+        if slash_match:
+            first, second, year = int(slash_match.group(1)), int(slash_match.group(2)), int(slash_match.group(3))
+            if 1900 <= year <= 2100:
+                if first > 12 and 1 <= second <= 12:
+                    # First number can't be a month, so dd/mm/yyyy
+                    try:
+                        return datetime(year, second, first).strftime('%Y-%m-%d')
+                    except ValueError:
+                        pass
+                elif second > 12 and 1 <= first <= 12:
+                    # Second number can't be a day > 12 for month, so mm/dd/yyyy
+                    try:
+                        return datetime(year, first, second).strftime('%Y-%m-%d')
+                    except ValueError:
+                        pass
+                else:
+                    # Ambiguous (both <= 12): try day-first (European) as default for this system
+                    try:
+                        return datetime(year, second, first).strftime('%Y-%m-%d')
+                    except ValueError:
+                        try:
+                            return datetime(year, first, second).strftime('%Y-%m-%d')
+                        except ValueError:
+                            pass
+
+        # Regex fallback for embedded dates
         date_pattern = r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})'
         match = re.search(date_pattern, date_str_clean)
         if match:
@@ -642,7 +673,6 @@ def validate_date(date_str: str) -> Optional[str]:
             except ValueError:
                 pass
 
-        # Return original if we couldn't parse but it looks date-like
         logger.debug(f"Could not parse date format: {date_str_clean}")
         return date_str_clean
 
@@ -653,16 +683,68 @@ def validate_date(date_str: str) -> Optional[str]:
 
 def validate_amount(amount_str: str) -> Optional[float]:
     """
-    Validate and parse monetary amounts
+    Validate and parse monetary amounts with European format support.
+    Handles:
+      - US/UK: 1,234.56
+      - European: 1.234,56
+      - Space-separated: 1 234.56 or 1 234,56
+      - Parenthetical negatives: (1,234.56)
+      - Currency symbols: $, €, £, ¥, CHF, etc.
     Returns float or None
     """
     try:
-        # Remove currency symbols and commas
-        cleaned = re.sub(r'[,$€£¥]', '', str(amount_str))
+        cleaned = str(amount_str).strip()
+
+        # Detect and handle parenthetical negatives: (1,234.56)
+        is_negative = False
+        if cleaned.startswith('(') and cleaned.endswith(')'):
+            is_negative = True
+            cleaned = cleaned[1:-1].strip()
+        elif cleaned.startswith('-'):
+            is_negative = True
+            cleaned = cleaned[1:].strip()
+
+        # Remove currency symbols and words
+        cleaned = re.sub(r'[$€£¥]', '', cleaned)
+        cleaned = re.sub(r'\b(CHF|EUR|USD|GBP|SEK|NOK|DKK)\b', '', cleaned, flags=re.IGNORECASE)
         cleaned = cleaned.strip()
 
-        # Parse float
+        if not cleaned:
+            return None
+
+        # Remove spaces used as thousand separators (e.g., 1 234.56 or 1 234,56)
+        cleaned = re.sub(r'(\d)\s+(\d)', r'\1\2', cleaned)
+
+        # Detect European vs US format by looking at last separator
+        # European: 1.234,56 (period=thousands, comma=decimal)
+        # US/UK: 1,234.56 (comma=thousands, period=decimal)
+        has_comma = ',' in cleaned
+        has_period = '.' in cleaned
+
+        if has_comma and has_period:
+            last_comma = cleaned.rfind(',')
+            last_period = cleaned.rfind('.')
+            if last_comma > last_period:
+                # European: 1.234,56 — period is thousands, comma is decimal
+                cleaned = cleaned.replace('.', '').replace(',', '.')
+            else:
+                # US: 1,234.56 — comma is thousands, period is decimal
+                cleaned = cleaned.replace(',', '')
+        elif has_comma and not has_period:
+            # Could be European decimal (3,50) or US thousands (1,000)
+            # If exactly 3 digits after comma, treat as thousands separator
+            parts = cleaned.split(',')
+            if len(parts) == 2 and len(parts[1]) == 3 and len(parts[0]) >= 1:
+                # Likely thousands: 1,000
+                cleaned = cleaned.replace(',', '')
+            else:
+                # Likely decimal: 3,50 or 1234,56
+                cleaned = cleaned.replace(',', '.')
+        # If only period, it's already in standard format
+
         amount = float(cleaned)
+        if is_negative:
+            amount = -amount
         return round(amount, 2)
 
     except (ValueError, TypeError):
@@ -756,10 +838,18 @@ JSON:"""
             'phone_numbers': []
         }
 
-        # Update with extracted entities
+        # Update with extracted entities, coercing to lists when needed
         for key in default_entities.keys():
-            if key in entities and isinstance(entities[key], list):
-                default_entities[key] = entities[key]
+            if key in entities:
+                val = entities[key]
+                if isinstance(val, list):
+                    default_entities[key] = val
+                elif isinstance(val, str):
+                    # Comma-separated string from regex fallback → split into list
+                    items = [item.strip().strip('"\'') for item in val.split(',')]
+                    default_entities[key] = [item for item in items if item]
+                elif val is not None:
+                    default_entities[key] = [str(val)]
 
         logger.info(f"✓ Extracted entities: {sum(len(v) for v in default_entities.values())} total")
 

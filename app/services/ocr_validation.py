@@ -62,7 +62,8 @@ def apply_regex_fixes(text: str) -> Tuple[str, int]:
 async def validate_ocr_quality(
     ocr_text: str,
     models: Dict[str, Any],
-    ocr_confidence: Optional[Dict[str, float]] = None
+    ocr_confidence: Optional[Dict[str, float]] = None,
+    page_image: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
     Validate OCR quality using Smart Routing based on PaddleOCR confidence scores.
@@ -71,12 +72,13 @@ async def validate_ocr_quality(
     - SKIP (≥95%): High confidence, no validation needed
     - LIGHT (75-94%): Medium confidence, apply regex fixes only
     - FULL (50-74%): Low confidence, full LLaMA validation
-    - REVIEW (<50%): Very poor, flag for manual review
+    - REVIEW (<50%): Very poor, try TrOCR fallback, then LLaMA, flag for manual review
 
     Args:
         ocr_text: Raw text extracted by PaddleOCR
         models: Loaded models dictionary
         ocr_confidence: Dict with 'avg_confidence' and 'min_confidence' from PaddleOCR
+        page_image: Optional PIL Image for TrOCR fallback in REVIEW tier
 
     Returns:
         {
@@ -140,9 +142,82 @@ async def validate_ocr_quality(
         # TIER 4: REVIEW (confidence < low_threshold)
         # ==========================================
         if avg_conf < low_threshold:
-            logger.warning(f"🔴 OCR confidence {avg_conf:.0%} < {low_threshold:.0%} → FLAG for manual review")
-            # Still apply regex fixes as a best effort
+            logger.warning(f"🔴 OCR confidence {avg_conf:.0%} < {low_threshold:.0%} → FLAG for manual review + TrOCR/LLaMA correction")
+            # Apply regex fixes first
             corrected_text, fixes_made = apply_regex_fixes(ocr_text)
+            
+            # Try TrOCR fallback if page image is available
+            trocr_used = False
+            if page_image is not None:
+                trocr = models.get('trocr')
+                if trocr:
+                    try:
+                        import torch
+                        from PIL import Image
+                        processor = trocr['processor']
+                        model = trocr['model']
+                        device = trocr.get('device', 'cpu')
+                        
+                        # Ensure PIL image
+                        if not isinstance(page_image, Image.Image):
+                            page_image = Image.fromarray(page_image).convert("RGB")
+                        else:
+                            page_image = page_image.convert("RGB")
+                        
+                        inputs = processor(images=page_image, return_tensors="pt")
+                        pixel_values = inputs["pixel_values"].to(device)
+                        
+                        with torch.no_grad():
+                            generated_ids = model.generate(
+                                pixel_values=pixel_values,
+                                max_new_tokens=256,
+                                num_beams=1,
+                                do_sample=False,
+                                early_stopping=True
+                            )
+                        trocr_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+                        
+                        # Use TrOCR output if it produced meaningful text
+                        if trocr_text and len(trocr_text) > len(corrected_text) * 0.5:
+                            corrected_text = trocr_text
+                            fixes_made += 1
+                            trocr_used = True
+                            logger.info("✓ TrOCR fallback produced better text for REVIEW tier")
+                    except Exception as trocr_err:
+                        logger.warning(f"TrOCR fallback failed: {trocr_err}")
+            
+            # Attempt LLaMA correction (on TrOCR output or regex-corrected text)
+            from app.models.loader import ensure_llama_loaded
+            llama = ensure_llama_loaded()
+            
+            if llama and corrected_text.strip():
+                try:
+                    from app.api.config_endpoints import get_runtime_config
+                    review_config = get_runtime_config()
+                    ocr_temp = review_config.get('OCR_CORRECTION_TEMPERATURE', 0.05)
+                    ocr_max_tokens = review_config.get('OCR_CORRECTION_MAX_TOKENS', 2500)
+                    
+                    review_prompt = f"""You are an OCR correction expert. Fix ONLY character-level OCR errors in this very low quality text. Preserve ALL formatting.
+
+Text to correct:
+{corrected_text[:3000]}
+
+Return ONLY the corrected text, nothing else."""
+                    
+                    result = llama(
+                        review_prompt,
+                        max_tokens=ocr_max_tokens,
+                        temperature=ocr_temp,
+                        stop=["\n\nThe only", "\n\nNote that", "\n\nPlease"]
+                    )
+                    if result and result.get('choices'):
+                        llama_text = result['choices'][0].get('text', '').strip()
+                        if llama_text and len(llama_text) > len(corrected_text) * 0.3:
+                            corrected_text = llama_text
+                            fixes_made += 1
+                            logger.info("✓ LLaMA correction applied to REVIEW tier text")
+                except Exception as llama_err:
+                    logger.warning(f"LLaMA correction failed for REVIEW tier: {llama_err}")
             
             return {
                 'corrected_text': corrected_text,
@@ -162,12 +237,9 @@ async def validate_ocr_quality(
         # Quick quality assessment (heuristic)
         initial_quality = assess_text_quality(ocr_text)
 
-        # Get Llama model
-        llama = models.get('llama')
-        if llama is None:
-            from app.models.loader import load_llama_model
-            llama = load_llama_model()
-            models['llama'] = llama
+        # Get Llama model (thread-safe)
+        from app.models.loader import ensure_llama_loaded
+        llama = ensure_llama_loaded()
 
         if llama is None:
             logger.warning("Llama not available, returning uncorrected text")

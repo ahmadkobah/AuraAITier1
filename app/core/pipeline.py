@@ -186,14 +186,29 @@ async def run_full_ai_pipeline(
     # ========================
     # Database Connection Setup
     # ========================
+    
+    def _checkpoint(step_name: str, data: dict = None):
+        """Save intermediate checkpoint to MongoDB for crash recovery"""
+        try:
+            documents_collection.update_one(
+                {'_id': doc_id},
+                {'$set': {
+                    'checkpoint': {
+                        'step': step_name,
+                        'timestamp': datetime.utcnow(),
+                        'data': data or {}
+                    }
+                }}
+            )
+            logger.debug(f"Checkpoint: {step_name}")
+        except Exception:
+            pass  # Non-critical — don't let checkpoint failures kill the pipeline
+    
     try:
         db = db_connection
         documents_collection = db['documents']
         
-        print("\\n" + "="*80)
-        print(f"🔵 PIPELINE START: doc_id={doc_id}, pdf_file_path={pdf_file_path}")
-        print("="*80 + "\\n")
-        logger.info(f"Starting pipeline for doc_id: {doc_id}")
+        logger.info(f"PIPELINE START: doc_id={doc_id}, pdf_file_path={pdf_file_path}")
         
         # Convert doc_id to ObjectId if it's a string
         original_doc_id = doc_id
@@ -239,31 +254,30 @@ async def run_full_ai_pipeline(
             raise RuntimeError(error_msg)
         
         # Step 1: Split PDF and extract text
-        print(f"🔵 STEP 1: PDF Document Splitting (ENABLE_PDF_SPLITTING={ENABLE_PDF_SPLITTING})")
-        logger.info("Step 1: Splitting PDF...")
+        logger.info(f"Step 1: Splitting PDF (ENABLE_PDF_SPLITTING={ENABLE_PDF_SPLITTING})")
         from app.core.classifier import (
             split_pdf_and_find_breaks,
             classify_text
         )
         from app.services.signature_ocr import ocr_signature
-        from app.services.signature_detection import detect_signature_boxes as detect_signature_boxes_yolo
         
         if ENABLE_PDF_SPLITTING:
             # Read similarity threshold from Control Panel config
             similarity_threshold = config.get('SIMILARITY_THRESHOLD', 0.5)
-            print(f"🔵 CALLING: split_pdf_and_find_breaks(pdf_file_path={pdf_file_path}, similarity_threshold={similarity_threshold})")
+            logger.info(f"Calling split_pdf_and_find_breaks(similarity_threshold={similarity_threshold})")
             logical_documents = split_pdf_and_find_breaks(
                 pdf_file_path,
                 models,
                 similarity_threshold=similarity_threshold
             )
-            print(f"🔵 RETURNED: split_pdf_and_find_breaks returned {len(logical_documents)} logical documents")
             logger.info(f"✓ Split into {len(logical_documents)} logical documents")
         else:
             # Treat entire PDF as single document
             logger.info("⏸️ PDF splitting disabled - treating as single document")
             from app.core.classifier import extract_text_basic
-            full_text = extract_text_basic(pdf_file_path, models)
+            result = extract_text_basic(pdf_file_path, models)
+            # extract_text_basic returns a dict {'text': ..., 'ocr_confidence': ...}
+            full_text = result['text'] if isinstance(result, dict) else result
             logical_documents = [{
                 'doc_num': 1,
                 'start_page': 0,
@@ -272,98 +286,97 @@ async def run_full_ai_pipeline(
                 'text': full_text,
                 'embedding': None
             }]
+        
+        _checkpoint('pdf_split', {'doc_count': len(logical_documents)})
 
         # ========================
-        # Convert PDF to Images with Safety Checks
+        # Get Page Images (reuse from classifier or convert)
         # ========================
-        from pdf2image import convert_from_path
-        poppler_path = os.getenv('POPPLER_PATH', r"C:\Users\Ahmad\poppler\poppler-24.08.0\Library\bin")
-        
-        # Memory management: Limit pages and DPI to prevent OOM
-        max_pages = int(os.getenv('MAX_PAGES_PER_DOCUMENT', '50'))
-        dpi = int(os.getenv('PDF_CONVERSION_DPI', '200'))
-        
         images = None
-        try:
-            # Check if Poppler is available
-            if os.path.exists(poppler_path):
-                logger.info(f"Using Poppler from: {poppler_path}")
-                images = convert_from_path(
-                    pdf_file_path, 
-                    dpi=dpi,
-                    last_page=max_pages,
-                    poppler_path=poppler_path
-                )
-            else:
-                # Try system Poppler (might be in PATH)
-                logger.warning(f"Poppler path not found: {poppler_path}, trying system PATH")
-                images = convert_from_path(
-                    pdf_file_path, 
-                    dpi=dpi, 
-                    last_page=max_pages
-                )
-            
-            if not images:
-                raise ValueError("PDF conversion produced no images")
-                
-            logger.info(f"✓ Converted PDF to {len(images)} images (DPI: {dpi}, Max pages: {max_pages})")
-            
-        except FileNotFoundError as e:
-            error_msg = (
-                f"Poppler not found: {e}. "
-                f"Please install Poppler from: https://github.com/oschwartz10612/poppler-windows/releases "
-                f"and set POPPLER_PATH environment variable."
-            )
-            logger.error(error_msg)
-            # Update database with helpful error message
-            try:
-                documents_collection.update_one(
-                    {'_id': doc_id},
-                    {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
-                )
-            except Exception as db_err:
-                logger.error(f"Failed to update document status: {db_err}")
-            raise FileNotFoundError(error_msg)
-            
-        except MemoryError as e:
-            error_msg = f"Out of memory while converting PDF. Try reducing PDF_CONVERSION_DPI or MAX_PAGES_PER_DOCUMENT environment variables."
-            logger.error(error_msg)
-            try:
-                documents_collection.update_one(
-                    {'_id': doc_id},
-                    {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
-                )
-            except Exception as db_err:
-                logger.error(f"Failed to update document status: {db_err}")
-            raise MemoryError(error_msg)
-            
-        except (ValueError, OSError, IOError, RuntimeError) as e:
-            error_msg = f"PDF conversion failed: {str(e)}"
-            logger.error(error_msg)
-            try:
-                documents_collection.update_one(
-                    {'_id': doc_id},
-                    {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
-                )
-            except Exception as db_err:
-                logger.error(f"Failed to update document status: {db_err}")
-            raise RuntimeError(error_msg)
-            
-        except Exception as e:
-            error_msg = f"Unexpected error during PDF conversion: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            try:
-                documents_collection.update_one(
-                    {'_id': doc_id},
-                    {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
-                )
-            except Exception as db_err:
-                logger.error(f"Failed to update document status: {db_err}")
-            raise
         
-        # Safety check: Ensure images were successfully created
+        if ENABLE_PDF_SPLITTING and logical_documents:
+            # Reuse PIL images already rendered by split_pdf_and_find_breaks (300 DPI)
+            # This avoids a second expensive PDF-to-image conversion
+            images = []
+            for logical_doc in logical_documents:
+                images.extend(logical_doc.get('page_images_pil', []))
+            
+            if images:
+                logger.info(f"✓ Reusing {len(images)} images from classifier (no re-conversion needed)")
+            else:
+                logger.warning("No PIL images returned from classifier, falling back to conversion")
+        
         if not images:
-            error_msg = "Failed to convert PDF to images - images list is empty"
+            # Fallback: convert PDF to images (used when splitting is disabled)
+            from pdf2image import convert_from_path
+            poppler_path = os.getenv('POPPLER_PATH') or None
+            
+            max_pages = int(os.getenv('MAX_PAGES_PER_DOCUMENT', '50'))
+            dpi = int(os.getenv('PDF_CONVERSION_DPI', '200'))
+            
+            try:
+                if poppler_path and os.path.exists(poppler_path):
+                    logger.info(f"Using Poppler from: {poppler_path}")
+                    images = convert_from_path(
+                        pdf_file_path,
+                        dpi=dpi,
+                        last_page=max_pages,
+                        poppler_path=poppler_path
+                    )
+                else:
+                    logger.info("Using Poppler from system PATH")
+                    images = convert_from_path(
+                        pdf_file_path,
+                        dpi=dpi,
+                        last_page=max_pages
+                    )
+                
+                if not images:
+                    raise ValueError("PDF conversion produced no images")
+                    
+                logger.info(f"✓ Converted PDF to {len(images)} images (DPI: {dpi}, Max pages: {max_pages})")
+                
+            except FileNotFoundError as e:
+                error_msg = (
+                    f"Poppler not found: {e}. "
+                    f"Please install Poppler and set POPPLER_PATH environment variable."
+                )
+                logger.error(error_msg)
+                try:
+                    documents_collection.update_one(
+                        {'_id': doc_id},
+                        {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
+                    )
+                except Exception as db_err:
+                    logger.error(f"Failed to update document status: {db_err}")
+                raise FileNotFoundError(error_msg)
+                
+            except MemoryError as e:
+                error_msg = f"Out of memory while converting PDF. Try reducing PDF_CONVERSION_DPI or MAX_PAGES_PER_DOCUMENT environment variables."
+                logger.error(error_msg)
+                try:
+                    documents_collection.update_one(
+                        {'_id': doc_id},
+                        {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
+                    )
+                except Exception as db_err:
+                    logger.error(f"Failed to update document status: {db_err}")
+                raise MemoryError(error_msg)
+                
+            except Exception as e:
+                error_msg = f"PDF conversion failed: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                try:
+                    documents_collection.update_one(
+                        {'_id': doc_id},
+                        {'$set': {'status': 'FAILED', 'error': error_msg, 'processing_completed': datetime.utcnow()}}
+                    )
+                except Exception as db_err:
+                    logger.error(f"Failed to update document status: {db_err}")
+                raise
+        
+        if not images:
+            error_msg = "Failed to obtain page images"
             logger.error(error_msg)
             try:
                 documents_collection.update_one(
@@ -373,6 +386,8 @@ async def run_full_ai_pipeline(
             except Exception as db_err:
                 logger.error(f"Failed to update document status: {db_err}")
             raise ValueError(error_msg)
+        
+        _checkpoint('images_converted', {'page_count': len(images)})
         
         # ========================
         # Process Each Logical Document
@@ -480,59 +495,50 @@ async def run_full_ai_pipeline(
 
             if ENABLE_SIGNATURE_DETECTION:
                 logger.info("  Detecting signatures...")
+                from app.services.signature_detection import detect_signatures_batch
                 start_page = logical_doc['start_page']
                 end_page = logical_doc['end_page']
                 
                 # Process max 5 pages to prevent memory overflow
-                max_pages = min(end_page + 1, len(images), start_page + 5)
-
-                for p in range(start_page, max_pages):
+                max_pages_sig = min(end_page + 1, len(images), start_page + 5)
+                page_images_for_sig = [images[p] for p in range(start_page, max_pages_sig)]
+                
+                # Batch YOLO: single GPU session for all pages
+                batch_results = detect_signatures_batch(page_images_for_sig, models, return_images=False)
+                
+                # Run TrOCR only on pages where YOLO found detections
+                for page_offset, yolo_results in batch_results.items():
+                    if signature_found:
+                        break
+                    p = start_page + page_offset
                     img = images[p]
                     
-                    # Clear GPU cache every 2 pages
-                    if torch.cuda.is_available() and (p - start_page) % 2 == 0:
-                        torch.cuda.empty_cache()
-                        logger.debug(f"GPU cache cleared at page {p+1}")
+                    yolo_boxes = [r['box'] for r in yolo_results]
+                    
                     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                         tmp_path = tmp.name
                     
                     try:
                         img.save(tmp_path)
-                        # Use YOLOv8n to detect boxes on this page image
-                        yolo_results = detect_signature_boxes_yolo(img, models, return_images=False)
-                        
-                        # Only run TrOCR if YOLO actually detected signature regions
-                        if not yolo_results:
-                            logger.debug(f"  No signature regions detected on page {p+1}")
-                            continue
-                        
-                        # Extract boxes in old format for TrOCR compatibility
-                        yolo_boxes = [r['box'] for r in yolo_results]
-                        
-                        # Run TrOCR on detected box
                         sig_result = ocr_signature(tmp_path, models, boxes=yolo_boxes)
                         
-                        # Validate that extracted text looks like a signature (not just random text/numbers)
                         extracted_text = sig_result.get('text', '').strip()
                         if sig_result.get('found') and extracted_text:
-                            # Filter out false positives: pure numbers, single characters, common words
-                            if (len(extracted_text) >= 2 and  # At least 2 characters
-                                not extracted_text.replace('.', '').replace(',', '').isdigit() and  # Not just numbers
-                                extracted_text.lower() not in ['total', 'price', 'invoice', 'order', 'date', 'customer', 'address']):  # Not table headers
+                            if (len(extracted_text) >= 2 and
+                                not extracted_text.replace('.', '').replace(',', '').isdigit() and
+                                extracted_text.lower() not in ['total', 'price', 'invoice', 'order', 'date', 'customer', 'address']):
                                 signature_found = True
                                 signature_text = extracted_text
                                 signature_box = sig_result.get('box')
                                 signature_boxes = sig_result.get('boxes', [])
                                 signature_confidence = float(sig_result.get('confidence', 0.75))
                                 logger.info(f"  ✓ Signature candidate found on page {p+1}: '{signature_text}'")
-                                break  # stop at first positive page
                             else:
                                 logger.debug(f"  ✗ False positive filtered on page {p+1}: '{extracted_text}'")
                     finally:
                         try:
                             if os.path.exists(tmp_path):
                                 os.remove(tmp_path)
-                                logger.debug(f"Cleaned up temp file: {tmp_path}")
                         except Exception as e:
                             logger.warning(f"Failed to cleanup temp file {tmp_path}: {e}")
                 
@@ -798,7 +804,14 @@ async def run_full_ai_pipeline(
         
         logger.info(f"✓ Pipeline complete for {doc_id}")
         
-    except (ValueError, RuntimeError, OSError, IOError, ConnectionError) as e:
+        # Invalidate FAISS index so next search includes this document
+        try:
+            from app.utils.vector_index import invalidate as invalidate_faiss
+            invalidate_faiss()
+        except Exception:
+            pass  # Non-critical
+        
+    except Exception as e:
         logger.error(f"Error in pipeline for {doc_id}: {e}", exc_info=True)
         
         # Mark as failed
@@ -821,6 +834,26 @@ async def run_full_ai_pipeline(
             )
         except (ValueError, RuntimeError, ConnectionError) as db_error:
             logger.error(f"Failed to mark document as failed: {db_error}")
+    finally:
+        # Resource cleanup: close PIL images and release GPU memory
+        try:
+            if 'images' in dir() and images is not None:
+                for img in images:
+                    try:
+                        img.close()
+                    except Exception:
+                        pass
+                del images
+            # Release GPU memory
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            # Clean up temp files for this document
+            try:
+                cleanup_temp_files(str(original_doc_id) if 'original_doc_id' in dir() else str(doc_id))
+            except Exception:
+                pass
+        except Exception as cleanup_err:
+            logger.warning(f"Resource cleanup error: {cleanup_err}")
 
 
 async def generate_summary(text: str, models: Dict[str, Any]) -> str:
@@ -894,11 +927,14 @@ async def generate_summary(text: str, models: Dict[str, Any]) -> str:
         return fallback[:500]
 
 
-def cleanup_temp_files(doc_id: str, temp_dir: str = '/tmp') -> None:
+def cleanup_temp_files(doc_id: str, temp_dir: str = None) -> None:
     """
     Clean up temporary files created during processing
     """
     import shutil
+    if temp_dir is None:
+        from config.settings import TEMP_DIR
+        temp_dir = str(TEMP_DIR)
     doc_temp = os.path.join(temp_dir, f'doc_{doc_id}')
     
     try:

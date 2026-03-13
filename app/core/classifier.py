@@ -26,21 +26,18 @@ def pdf_to_images(pdf_path: str) -> List[Image.Image]:
     """
     logger.info(f"Converting PDF to images: {pdf_path}")
     try:
-        # Get poppler path from environment or use default
-        poppler_path = os.getenv('POPPLER_PATH', r"C:\Users\Ahmad\poppler\poppler-24.08.0\Library\bin")
+        poppler_path = os.getenv('POPPLER_PATH') or None
         
         # Read OCR DPI from Control Panel config
         from app.api.config_endpoints import get_runtime_config
         runtime_config = get_runtime_config()
         ocr_dpi = runtime_config.get('OCR_DPI', 300)
         
-        # Try with explicit poppler_path first
-        if os.path.exists(poppler_path):
+        if poppler_path and os.path.exists(poppler_path):
             logger.debug(f"Using explicit poppler_path: {poppler_path}")
             images = convert_from_path(pdf_path, dpi=ocr_dpi, poppler_path=poppler_path)
         else:
-            # Fallback to PATH lookup
-            logger.debug("Using poppler from PATH")
+            logger.debug("Using poppler from system PATH")
             images = convert_from_path(pdf_path, dpi=ocr_dpi)
             
         logger.info(f"✓ Converted {len(images)} pages to images")
@@ -242,10 +239,13 @@ def split_pdf_and_find_breaks(
         
         # Extract page images for this logical document (for table extraction)
         doc_page_images = []
+        doc_pil_images = []
         for page_idx in range(start_page, end_page):
             if page_idx < len(images):
                 # Convert PIL Image to numpy array for PPStructure
                 doc_page_images.append(np.array(images[page_idx]))
+                # Keep PIL reference for pipeline reuse (avoids second PDF conversion)
+                doc_pil_images.append(images[page_idx])
         
         # Calculate aggregate OCR confidence for this logical document
         doc_confidences = page_confidences[start_page:end_page]
@@ -265,13 +265,18 @@ def split_pdf_and_find_breaks(
             'embedding': doc_embedding.tolist(),
             'confidence': 0.85,  # Placeholder; could be computed from similarity scores
             'pages': doc_page_images,  # Page images as numpy arrays for table extraction
-            'ocr_confidence': {  # NEW: OCR confidence for smart routing
+            'page_images_pil': doc_pil_images,  # PIL images for signature detection (avoids re-conversion)
+            'ocr_confidence': {  # OCR confidence for smart routing
                 'avg_confidence': avg_ocr_conf,
                 'min_confidence': min_ocr_conf
             }
         })
     
     logger.info(f"✓ Split PDF into {len(logical_documents)} logical documents")
+    
+    # NOTE: PIL images are NOT closed here — they are passed to the pipeline
+    # via page_images_pil and will be cleaned up in the pipeline's finally block.
+    
     return logical_documents
 
 
@@ -295,59 +300,52 @@ def classify_text(
             'all_scores': {'Invoice': 0.92, 'Report': 0.05, 'Letter': 0.03}
         }
     """
+    # Description-enriched labels for better embedding similarity matching
+    LABEL_DESCRIPTIONS = {
+        'Invoice': 'Invoice: a billing document with line items, subtotals, tax, total amount, invoice number, and payment terms',
+        'Receipt': 'Receipt: a proof-of-payment document from a merchant with date, items purchased, and total paid',
+        'Purchase Order': 'Purchase Order: a buyer request document listing products, quantities, prices, and delivery terms',
+        'Credit Note': 'Credit Note: a document reducing the amount owed by a buyer, referencing an original invoice',
+        'Debit Note': 'Debit Note: a document increasing the amount owed, typically for additional charges',
+        'Payment Voucher': 'Payment Voucher: an authorization document for a payment with payee, amount, and account codes',
+        'Bank Statement': 'Bank Statement: a financial summary from a bank showing transactions, deposits, withdrawals, and balance',
+        'Financial Statement': 'Financial Statement: a formal report of financial activities such as income statement, balance sheet, or cash flow',
+        'Tax Document': 'Tax Document: a government or accounting form related to tax filing, deductions, or tax certificates',
+        'Contract': 'Contract: a legally binding agreement between parties with terms, obligations, signatures, and effective dates',
+        'Agreement': 'Agreement: a mutual arrangement between parties outlining shared terms and conditions',
+        'Non-Disclosure Agreement': 'Non-Disclosure Agreement: a confidentiality contract restricting sharing of proprietary information',
+        'Memorandum of Understanding': 'Memorandum of Understanding: a formal but non-binding document outlining mutual intentions between parties',
+        'Certificate': 'Certificate: an official document attesting to a fact, qualification, or status',
+        'License': 'License: an official permit granting authorization to perform an activity or use property',
+        'Permit': 'Permit: a government-issued document authorizing a specific activity or construction',
+        'Report': 'Report: a structured document presenting findings, analysis, data, or recommendations',
+        'Business Letter': 'Business Letter: formal correspondence between organizations or individuals on business matters',
+        'Memo': 'Memo: an internal communication document within an organization',
+        'Proposal': 'Proposal: a document suggesting a plan, project, or business offer for consideration',
+        'Quotation': 'Quotation: a document listing prices for requested goods or services',
+        'Tender Document': 'Tender Document: a formal bid submission in response to a procurement request',
+        'Form': 'Form: a structured document with fields to be filled in, such as an application or registration form',
+        'Delivery Note': 'Delivery Note: a document accompanying goods being delivered, listing items and quantities',
+        'Packing Slip': 'Packing Slip: a document inside a shipment listing the contents of the package',
+        'Bill of Lading': 'Bill of Lading: a shipping document issued by a carrier detailing cargo, origin, and destination',
+        'Shipping Document': 'Shipping Document: paperwork related to the transport and delivery of goods',
+        'Resume': 'Resume: a personal document summarizing work experience, education, and skills for job applications',
+        'Job Application': 'Job Application: a formal request for employment including personal and professional details',
+        'Employment Contract': 'Employment Contract: a legal agreement specifying terms of employment between employer and employee',
+        'Other': 'Other: a document that does not clearly fit any specific category',
+    }
+    
     if not candidate_labels:
-        candidate_labels = [
-            # Financial Documents (9 types)
-            'Invoice',
-            'Receipt',
-            'Purchase Order',
-            'Credit Note',
-            'Debit Note',
-            'Payment Voucher',
-            'Bank Statement',
-            'Financial Statement',
-            'Tax Document',
-            
-            # Legal Documents (7 types)
-            'Contract',
-            'Agreement',
-            'Non-Disclosure Agreement',
-            'Memorandum of Understanding',
-            'Certificate',
-            'License',
-            'Permit',
-            
-            # Business Documents (6 types)
-            'Report',
-            'Business Letter',
-            'Memo',
-            'Proposal',
-            'Quotation',
-            'Tender Document',
-            
-            # Operational Documents (5 types)
-            'Form',
-            'Delivery Note',
-            'Packing Slip',
-            'Bill of Lading',
-            'Shipping Document',
-            
-            # HR Documents (3 types)
-            'Resume',
-            'Job Application',
-            'Employment Contract',
-            
-            # Fallback
-            'Other'
-        ]
+        candidate_labels = list(LABEL_DESCRIPTIONS.keys())
     
     try:
-        # Embed text and labels
+        # Embed text and label descriptions (enriched for better similarity)
         sentence_transformer = models['sentence_transformer_classify']
         
         text_embedding = sentence_transformer.encode(text, convert_to_tensor=False)
+        label_texts = [LABEL_DESCRIPTIONS.get(label, label) for label in candidate_labels]
         label_embeddings = sentence_transformer.encode(
-            candidate_labels,
+            label_texts,
             convert_to_tensor=False
         )
         
@@ -443,12 +441,9 @@ async def classify_with_reasoning(
         if initial_classification is None:
             initial_classification = classify_text(text, models)
 
-        # Get Llama model
-        llama = models.get('llama')
-        if llama is None:
-            from app.models.loader import load_llama_model
-            llama = load_llama_model()
-            models['llama'] = llama
+        # Get Llama model (thread-safe)
+        from app.models.loader import ensure_llama_loaded
+        llama = ensure_llama_loaded()
 
         if llama is None:
             # Return initial classification without reasoning
@@ -581,14 +576,14 @@ def extract_text_basic(pdf_file_path: str, models: Dict[str, Any]) -> Dict[str, 
     from pdf2image import convert_from_path
     import os
     
-    poppler_path = os.getenv('POPPLER_PATH', r"C:\Users\Ahmad\poppler\poppler-24.08.0\Library\bin")
+    poppler_path = os.getenv('POPPLER_PATH') or None
     
     # Convert PDF to images
     try:
         images = convert_from_path(
             pdf_file_path,
             dpi=200,
-            poppler_path=poppler_path if os.path.exists(poppler_path) else None
+            poppler_path=poppler_path if poppler_path and os.path.exists(poppler_path) else None
         )
     except Exception as e:
         logger.error(f"Failed to convert PDF to images: {e}")
@@ -617,6 +612,13 @@ def extract_text_basic(pdf_file_path: str, models: Dict[str, Any]) -> Dict[str, 
     # Calculate aggregate confidence
     avg_conf = sum(all_confidences) / len(all_confidences) if all_confidences else 0.5
     min_conf = min(all_confidences) if all_confidences else 0.5
+    
+    # Close PIL images after extraction
+    for img in images:
+        try:
+            img.close()
+        except Exception:
+            pass
     
     return {
         'text': " ".join(all_text),

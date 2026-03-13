@@ -4,6 +4,7 @@ Detects and extracts tables from scanned documents
 Enhanced with LLaMA validation for improved accuracy
 """
 
+import asyncio
 import logging
 import cv2
 import json
@@ -301,7 +302,14 @@ def validate_table_with_llama(table_data: Dict[str, Any], ocr_text: str = "") ->
         Enhanced table data with LLaMA validation
     """
     try:
-        llamafile_url = os.getenv('LLAMAFILE_URL', 'http://localhost:8080')
+        from app.models.loader import get_models
+        models = get_models()
+        llama = models.get('llama') if models else None
+        
+        if llama is None:
+            logger.info("📋 LLaMA validation unavailable, using original table data")
+            table_data['llama_validated'] = False
+            return table_data
         
         # Build prompt for table validation
         rows_text = "\n".join([" | ".join(row) for row in table_data.get('rows', [])])
@@ -339,22 +347,19 @@ Respond ONLY with valid JSON."""
         config = get_runtime_config()
         table_temp = config.get('TABLE_EXTRACTION_TEMPERATURE', 0.2)
         table_tokens = config.get('TABLE_EXTRACTION_MAX_TOKENS', 1500)
-        table_timeout = config.get('TABLE_EXTRACTION_TIMEOUT', 60)
         
-        response = requests.post(
-            f'{llamafile_url}/completion',
-            json={
-                'prompt': prompt,
-                'temperature': table_temp,  # Read from Control Panel
-                'max_tokens': table_tokens,  # Read from Control Panel
-                'stop': ['\n\nExtracted', '\n\nYou are']
-            },
-            timeout=table_timeout  # Read from Control Panel
+        result = llama(
+            prompt,
+            max_tokens=table_tokens,
+            temperature=table_temp,
+            stop=['\n\nExtracted', '\n\nYou are']
         )
         
-        if response.status_code == 200:
-            result = response.json()
-            llama_output = result.get('content', '').strip()
+        llama_output = ''
+        if result and result.get('choices'):
+            llama_output = result['choices'][0].get('text', '').strip()
+        
+        if llama_output:
             
             # Extract JSON
             json_start = llama_output.find('{')
@@ -363,18 +368,26 @@ Respond ONLY with valid JSON."""
             if json_start >= 0 and json_end > json_start:
                 validation = json.loads(llama_output[json_start:json_end])
                 
-                # Apply corrections if valid
+                # Apply corrections if valid — verify row count matches before overwriting
                 if validation.get('is_valid') and validation.get('enhanced_rows'):
-                    table_data['rows'] = validation['enhanced_rows']
-                    table_data['llama_validated'] = True
-                    table_data['validation_confidence'] = validation.get('confidence', 0.0)
+                    original_rows = table_data.get('rows', [])
+                    enhanced_rows = validation['enhanced_rows']
                     
-                    if validation.get('corrections'):
-                        logger.info(f"✅ LLaMA applied {len(validation['corrections'])} corrections to table")
-                    
-                    if validation.get('warnings'):
-                        for warning in validation['warnings']:
-                            logger.warning(f"⚠️ Table validation: {warning}")
+                    # Only replace if row count matches (within ±1 tolerance for header differences)
+                    if abs(len(enhanced_rows) - len(original_rows)) <= 1 and len(enhanced_rows) >= 2:
+                        table_data['rows'] = enhanced_rows
+                        table_data['llama_validated'] = True
+                        table_data['validation_confidence'] = validation.get('confidence', 0.0)
+                        
+                        if validation.get('corrections'):
+                            logger.info(f"✅ LLaMA applied {len(validation['corrections'])} corrections to table")
+                        
+                        if validation.get('warnings'):
+                            for warning in validation['warnings']:
+                                logger.warning(f"⚠️ Table validation: {warning}")
+                    else:
+                        logger.warning(f"⚠️ LLaMA row count mismatch (original={len(original_rows)}, enhanced={len(enhanced_rows)}) — keeping original")
+                        table_data['llama_validated'] = False
                 else:
                     logger.warning("⚠️ LLaMA validation marked table as invalid")
                     table_data['llama_validated'] = False
@@ -517,10 +530,10 @@ async def extract_tables_from_pdf_pages(rendered_pages: List[np.ndarray], use_ll
                                 'num_cols': table_data['num_cols']
                             }
                         
-                        # Validate with LLaMA if enabled
+                        # Validate with LLaMA if enabled (run in thread to avoid blocking event loop)
                         if use_llama_validation and table_info['rows']:
                             logger.info(f"🤖 Validating page {page_num} table with LLaMA...")
-                            table_info = validate_table_with_llama(table_info)
+                            table_info = await asyncio.to_thread(validate_table_with_llama, table_info)
                         
                         # Final safety: convert any remaining numpy types
                         table_info = convert_numpy_types(table_info)
@@ -558,15 +571,20 @@ async def extract_tables_from_text_with_llama(text: str, models: Dict) -> List[D
         List of table dictionaries with rows, structure, and confidence
     """
     try:
-        # Check if LLaMA is available
-        llamafile_url = os.environ.get('LLAMAFILE_URL', 'http://localhost:8080')
+        # Get LLaMA wrapper from loaded models
+        from app.models.loader import get_models
+        loaded_models = get_models()
+        llama = loaded_models.get('llama') if loaded_models else None
+        
+        if llama is None:
+            logger.warning("LLaMA unavailable for text table extraction")
+            return []
         
         # Read settings from Control Panel
         from app.api.config_endpoints import get_runtime_config
         config = get_runtime_config()
         table_temp = config.get('TABLE_EXTRACTION_TEMPERATURE', 0.2)
         table_tokens = config.get('TABLE_EXTRACTION_MAX_TOKENS', 1500)
-        table_timeout = config.get('TABLE_EXTRACTION_TIMEOUT', 60)
         
         prompt = f"""You are a table extraction expert. Analyze the following text and identify any tables formatted with spaces or alignment.
 
@@ -605,23 +623,21 @@ TEXT TO ANALYZE:
 
 Respond ONLY with valid JSON. If no tables found, return {{"tables": []}}."""
 
-        response = requests.post(
-            f'{llamafile_url}/completion',
-            json={
-                'prompt': prompt,
-                'temperature': table_temp,
-                'max_tokens': table_tokens,
-                'stop': ['\n\nEXTRACTED', '\n\nYou are']
-            },
-            timeout=table_timeout
+        result = await asyncio.to_thread(
+            llama,
+            prompt,
+            max_tokens=table_tokens,
+            temperature=table_temp,
+            stop=['\n\nEXTRACTED', '\n\nYou are']
         )
         
-        if response.status_code != 200:
-            logger.warning(f"LLaMA text table extraction failed: {response.status_code}")
-            return []
+        llama_output = ''
+        if result and result.get('choices'):
+            llama_output = result['choices'][0].get('text', '').strip()
         
-        result = response.json()
-        llama_output = result.get('content', '').strip()
+        if not llama_output:
+            logger.warning("LLaMA text table extraction returned empty")
+            return []
         
         # Extract JSON
         json_start = llama_output.find('{')

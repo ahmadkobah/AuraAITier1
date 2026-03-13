@@ -162,3 +162,102 @@ def detect_signature_boxes(image: Image.Image, models, return_images: bool = Fal
             if isinstance(yolo_dict, dict):
                 yolo_dict['model'] = yolo
             torch.cuda.empty_cache()
+
+
+def detect_signatures_batch(page_images: List[Image.Image], models, return_images: bool = False) -> Dict[int, List[Dict[str, Any]]]:
+    """
+    Detect signatures across multiple page images in a single GPU session.
+    Transfers YOLO to GPU once, processes all pages, then transfers back.
+    
+    Args:
+        page_images: List of PIL Images (one per page)
+        models: Global models dictionary containing 'yolo' model
+        return_images: If True, include cropped base64 images
+        
+    Returns:
+        Dict mapping page index to list of detection dicts
+    """
+    from app.models.loader import load_yolo_model, check_gpu_memory_available, clear_gpu_cache
+    import torch
+    
+    yolo_dict = models.get('yolo')
+    if yolo_dict is None:
+        yolo_dict = load_yolo_model()
+        models['yolo'] = yolo_dict
+    
+    if not yolo_dict:
+        logger.warning("YOLO model not available for batch detection")
+        return {}
+    
+    if isinstance(yolo_dict, dict):
+        yolo = yolo_dict['model']
+        original_device = yolo_dict.get('original_device', 'cpu')
+    else:
+        yolo = yolo_dict
+        original_device = 'cpu'
+    
+    use_gpu = torch.cuda.is_available() and check_gpu_memory_available(512)
+    
+    # Move to GPU ONCE for entire batch
+    if use_gpu and str(yolo.device) == 'cpu':
+        clear_gpu_cache()
+        yolo.to('cuda')
+        logger.info(f"YOLO moved to GPU for batch inference ({len(page_images)} pages)")
+    
+    from app.api.config_endpoints import get_runtime_config
+    runtime_config = get_runtime_config()
+    confidence_threshold = runtime_config.get('YOLO_CONFIDENCE', 0.60)
+    iou_threshold = runtime_config.get('YOLO_IOU_THRESHOLD', 0.45)
+    
+    results_by_page = {}
+    
+    try:
+        for idx, image in enumerate(page_images):
+            try:
+                img_array = np.array(image)
+                results = yolo.predict(
+                    source=img_array,
+                    conf=confidence_threshold,
+                    iou=iou_threshold,
+                    verbose=False
+                )
+                
+                boxes = []
+                if results and len(results) > 0:
+                    result = results[0]
+                    if result.boxes is not None and len(result.boxes) > 0:
+                        xyxy = result.boxes.xyxy.cpu().numpy()
+                        confidences = result.boxes.conf.cpu().numpy()
+                        
+                        for i, (box, conf) in enumerate(zip(xyxy, confidences)):
+                            x1, y1, x2, y2 = map(int, box)
+                            w = x2 - x1
+                            h = y2 - y1
+                            if w > 0 and h > 0:
+                                box_data = {
+                                    'box': (x1, y1, w, h),
+                                    'confidence': float(conf)
+                                }
+                                if return_images:
+                                    base64_img = crop_signature_region(image, (x1, y1, w, h))
+                                    if base64_img:
+                                        box_data['image'] = base64_img
+                                boxes.append(box_data)
+                
+                if boxes:
+                    results_by_page[idx] = boxes
+                    
+            except Exception as e:
+                logger.error(f"Error detecting signatures on page {idx}: {e}")
+                continue
+        
+        logger.info(f"YOLO batch: {len(results_by_page)} pages with detections out of {len(page_images)}")
+        return results_by_page
+        
+    finally:
+        # Move back ONCE after entire batch
+        if use_gpu and str(yolo.device) == 'cuda' and original_device == 'cpu':
+            yolo.to('cpu')
+            if isinstance(yolo_dict, dict):
+                yolo_dict['model'] = yolo
+            torch.cuda.empty_cache()

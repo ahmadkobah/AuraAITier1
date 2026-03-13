@@ -28,6 +28,48 @@ from config.settings import UPLOADS_DIR, TEMP_DIR
 # Load environment variables from .env file
 load_dotenv()
 
+
+# ========================
+# Security Helpers
+# ========================
+
+# Allowed base directories for file access (uploads + temp)
+_ALLOWED_BASE_DIRS = [
+    os.path.realpath(str(UPLOADS_DIR)),
+    os.path.realpath(str(TEMP_DIR)),
+]
+
+
+def validate_file_path(file_path: str) -> str:
+    """
+    Validate that a file path is within allowed directories.
+    Prevents path traversal attacks (e.g., ../../etc/passwd).
+    
+    Returns the resolved real path if valid.
+    Raises HTTPException 403 if path escapes allowed directories.
+    """
+    resolved = os.path.realpath(file_path)
+    if not any(resolved.startswith(base) for base in _ALLOWED_BASE_DIRS):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: file path outside allowed directories"
+        )
+    return resolved
+
+
+def safe_doc_id(doc_id: str):
+    """
+    Convert a document ID string to ObjectId if valid, otherwise return raw string.
+    Handles both ObjectId hex strings and arbitrary string IDs consistently.
+    """
+    from bson import ObjectId
+    if isinstance(doc_id, ObjectId):
+        return doc_id
+    try:
+        return ObjectId(doc_id)
+    except Exception:
+        return doc_id
+
 # Configure logging - Write to both console AND file with NO BUFFERING
 import logging.handlers
 import sys
@@ -149,6 +191,16 @@ class QueryResponse(BaseModel):
     timestamp: datetime
 
 
+class ScanRequest(BaseModel):
+    """Scanner endpoint request validation"""
+    scanner_name: Optional[str] = None
+    color_mode: str = Field(default='color', pattern=r'^(color|gray|lineart)$')
+    dpi: int = Field(default=300, ge=150, le=1200)
+    scan_mode: str = Field(default='flatbed', pattern=r'^(flatbed|adf)$')
+    doc_id: str
+    config_override: Optional[Dict[str, Any]] = None
+
+
 # ========================
 # Global State
 # ========================
@@ -233,52 +285,6 @@ async def lifespan(app: FastAPI):
             logger.info("✓ MongoDB connection closed")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
-
-
-# ========================
-# Helper Functions
-# ========================
-
-async def generate_llama_summary(text: str, question: str) -> str:
-    """
-    Generate summary using LLaMA server
-    
-    Args:
-        text: Document text to summarize
-        question: Summarization prompt
-        
-    Returns:
-        Generated summary string
-        
-    Raises:
-        Exception if LLaMA server unavailable
-    """
-    try:
-        import requests
-        llamafile_url = os.getenv('LLAMAFILE_URL', 'http://localhost:8080')
-        
-        response = requests.post(
-            f"{llamafile_url}/v1/chat/completions",
-            json={
-                "messages": [
-                    {"role": "user", "content": f"{question}\n\nDocument text:\n{text[:4000]}"}
-                ],
-                "temperature": 0.3,
-                "max_tokens": 300
-            },
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            summary = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-            return summary.strip()
-        else:
-            raise Exception(f"LLaMA server returned status {response.status_code}")
-            
-    except Exception as e:
-        logger.error(f"LLaMA summary failed: {e}")
-        raise
 
 
 # ========================
@@ -540,37 +546,6 @@ async def get_hardware_stats() -> Dict[str, Any]:
         )
 
 
-@app.get("/api/v1/status", response_model=StatusResponse)
-async def service_status() -> StatusResponse:
-    """
-    Detailed service status including loaded models
-    """
-    models = get_models()
-    loaded_models = [
-        name for name, model in models.items()
-        if model is not None and name != 'llama'  # Llama is lazy-loaded
-    ]
-    
-    # Check if GPU is forced or actually available
-    force_gpu = os.getenv('FORCE_GPU', 'true').lower() == 'true'
-    gpu_available = torch.cuda.is_available() or force_gpu
-    
-    # Check database connection
-    db_connected = db_client is not None and db is not None
-    db_name = db.name if db is not None else None
-    
-    return StatusResponse(
-        status="ready" if models_ready() else "initializing",
-        models_loaded=loaded_models,
-        ready=models_ready(),
-        gpu_available=gpu_available,
-        available_models=len(loaded_models),
-        timestamp=datetime.utcnow(),
-        database_connected=db_connected,
-        database_name=db_name
-    )
-
-
 @app.post("/api/v1/process", response_model=ProcessResponse)
 async def process_document(
     request: ProcessRequest,
@@ -598,7 +573,7 @@ async def process_document(
     """
     try:
         doc_id = request.doc_id
-        pdf_path = request.pdf_file_path
+        pdf_path = validate_file_path(request.pdf_file_path)
         
         # Validate file exists
         if not os.path.exists(pdf_path):
@@ -728,7 +703,7 @@ async def upload_and_process_document(
             )
         documents = db['documents']
         documents.update_one(
-            {'_id': ObjectId(doc_id) if len(doc_id) == 24 else doc_id},
+            {'_id': safe_doc_id(doc_id)},
             {
                 '$set': {
                     'status': 'PENDING',
@@ -808,8 +783,8 @@ async def get_document_status(doc_id: str) -> DocumentStatusResponse:
     try:
         from bson import ObjectId
         
-        # Convert string ID to ObjectId
-        doc_obj_id = ObjectId(doc_id) if not isinstance(doc_id, ObjectId) else doc_id
+        # Convert string ID to ObjectId (try both formats for backward compatibility)
+        doc_obj_id = safe_doc_id(doc_id)
         
         # Check documents collection
         if db is None:
@@ -819,6 +794,10 @@ async def get_document_status(doc_id: str) -> DocumentStatusResponse:
             )
         documents = db['documents']
         doc = documents.find_one({'_id': doc_obj_id})
+        
+        # Fallback: try raw string if ObjectId lookup failed
+        if not doc and isinstance(doc_obj_id, ObjectId):
+            doc = documents.find_one({'_id': doc_id})
         
         if not doc:
             raise HTTPException(
@@ -912,66 +891,17 @@ async def vector_search(request: SearchRequest) -> Dict[str, Any]:
             results = list(documents.aggregate(pipeline))
             
         except Exception as e:
-            # Fallback: manual similarity search
-            logger.info(f"Atlas search unavailable, using fallback: {e}")
+            # Fallback: FAISS-based local similarity search
+            logger.info(f"Atlas search unavailable, using FAISS fallback: {e}")
             
-            # Only search in completed documents
-            search_filter['status'] = 'COMPLETE'
-            all_docs = list(documents.find(search_filter))
-            results = []
-            
-            logger.info(f"Searching through {len(all_docs)} completed documents")
-            
-            import numpy as np
-            query_lower = request.query.lower()
-            
-            for doc in all_docs:
-                for processed_doc in doc.get('processed_data', []):
-                    text = processed_doc.get('text', '')
-                    embedding = processed_doc.get('embedding', [])
-                    
-                    # Check for exact text match (case-insensitive)
-                    has_exact_match = query_lower in text.lower()
-                    
-                    if embedding:
-                        # Cosine similarity
-                        sim = np.dot(query_embedding, embedding) / (
-                            np.linalg.norm(query_embedding) * np.linalg.norm(embedding) + 1e-8
-                        )
-                        
-                        # Boost score if exact text match found
-                        if has_exact_match:
-                            sim = min(1.0, sim + 0.3)  # Boost by 30% but cap at 1.0
-                        
-                        # Lower threshold to 0.15 (15%) for better recall
-                        if sim > 0.15 or has_exact_match:
-                            results.append({
-                                'similarity_score': float(sim),
-                                'document': {
-                                    '_id': doc['_id'],
-                                    'logical_doc_num': processed_doc['logical_doc_num'],
-                                    'text': processed_doc['text'],
-                                    'page_range': processed_doc['page_range']
-                                }
-                            })
-                    elif has_exact_match:
-                        # If no embedding but exact match, include with score 0.5
-                        results.append({
-                            'similarity_score': 0.5,
-                            'document': {
-                                '_id': doc['_id'],
-                                'logical_doc_num': processed_doc['logical_doc_num'],
-                                'text': processed_doc['text'],
-                                'page_range': processed_doc['page_range']
-                            }
-                        })
-            
-            # Sort by score
-            results.sort(
-                key=lambda x: x['similarity_score'],
-                reverse=True
+            from app.utils.vector_index import search as faiss_search
+            results = faiss_search(
+                query_embedding=query_embedding,
+                db=db,
+                top_k=request.top_k,
+                doc_id_filter=request.doc_id,
+                query_text=request.query,
             )
-            results = results[:request.top_k]
         
         # Format results - Convert ObjectId to string for JSON serialization
         formatted_results = [
@@ -1415,70 +1345,40 @@ async def list_scanners():
 @app.post("/api/v1/scan")
 async def scan_document(
     background_tasks: BackgroundTasks,
-    request: Request
+    scan_request: ScanRequest
 ):
     """
     Scan document from physical scanner and process through AI pipeline
-    
-    Body:
-        scanner_name: Optional scanner device name
-        color_mode: 'color', 'gray', or 'lineart'
-        dpi: Scanning resolution (150, 300, 600)
-        scan_mode: 'flatbed' or 'adf'
-        doc_id: MongoDB document ID to associate with
-        config_override: Optional JSON object of tier/company-specific config overrides
-    
-    Config Priority:
-        1. config_override (highest) - Tier/company-specific settings from Control Panel
-        2. RUNTIME_CONFIG (medium) - AI Service configuration
-        3. Environment defaults (lowest) - .env file settings
     """
     try:
         from app.scanner.scanner_service import get_scanner_service
         import uuid
         
-        data = await request.json()
-        scanner_name = data.get('scanner_name')
-        color_mode = data.get('color_mode', 'color')
-        dpi = data.get('dpi', 300)
-        scan_mode = data.get('scan_mode', 'flatbed')
-        doc_id = data.get('doc_id')
-        config_override = data.get('config_override')
-        
-        if not doc_id:
-            raise HTTPException(status_code=400, detail="doc_id is required")
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database not connected")
         
         # Parse config_override if provided
-        config_dict = None
-        if config_override:
-            try:
-                import json
-                # Handle both string and dict formats
-                if isinstance(config_override, str):
-                    config_dict = json.loads(config_override)
-                elif isinstance(config_override, dict):
-                    config_dict = config_override
-                logger.info(f"Using config override for scan {doc_id}: {list(config_dict.keys())}")
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.warning(f"Invalid config_override: {e}. Using default config.")
+        config_dict = scan_request.config_override
+        if config_dict:
+            logger.info(f"Using config override for scan {scan_request.doc_id}: {list(config_dict.keys())}")
         
-        logger.info(f"🖨️ Scanning document (scanner={scanner_name or 'default'}, mode={color_mode}, dpi={dpi})")
+        logger.info(f"\ud83d\udda8\ufe0f Scanning document (scanner={scan_request.scanner_name or 'default'}, mode={scan_request.color_mode}, dpi={scan_request.dpi})")
         
         # Get scanner service
         scanner_service = get_scanner_service()
         
         # Scan pages
         scanned_images = scanner_service.scan_document(
-            scanner_name=scanner_name,
-            color_mode=color_mode,
-            dpi=dpi,
-            scan_mode=scan_mode
+            scanner_name=scan_request.scanner_name,
+            color_mode=scan_request.color_mode,
+            dpi=scan_request.dpi,
+            scan_mode=scan_request.scan_mode
         )
         
         if not scanned_images:
             raise HTTPException(status_code=400, detail="No pages scanned")
         
-        logger.info(f"✓ Scanned {len(scanned_images)} page(s)")
+        logger.info(f"\u2713 Scanned {len(scanned_images)} page(s)")
         
         # Save as temporary PDF
         scan_id = str(uuid.uuid4())
@@ -1486,28 +1386,22 @@ async def scan_document(
         
         # Convert images to PDF
         if len(scanned_images) == 1:
-            scanned_images[0].save(temp_pdf_path, 'PDF', resolution=dpi)
+            scanned_images[0].save(temp_pdf_path, 'PDF', resolution=scan_request.dpi)
         else:
             scanned_images[0].save(
                 temp_pdf_path,
                 'PDF',
                 save_all=True,
                 append_images=scanned_images[1:],
-                resolution=dpi
+                resolution=scan_request.dpi
             )
         
-        logger.info(f"✓ Saved scanned PDF: {temp_pdf_path}")
+        logger.info(f"\u2713 Saved scanned PDF: {temp_pdf_path}")
         
-        # Get MongoDB connection
-        mongo_uri = os.getenv('MONGODB_URI')
-        if not mongo_uri:
-            raise HTTPException(status_code=500, detail="MongoDB not configured")
-        
-        db_client = MongoClient(mongo_uri)
-        db = db_client[os.getenv('MONGODB_DB', 'aura')]
-        
-        # Use the backend document directly - no need to create a new one
+        # Use global db connection (no new MongoClient needed)
         from bson import ObjectId
+        
+        doc_id = scan_request.doc_id
         
         # Update the existing backend document with scan info
         db['documents'].update_one(
@@ -1569,14 +1463,21 @@ async def scan_document(
 # Q&A and Search Endpoints
 # ========================
 
+# Debug/test endpoints — only available when ENABLE_DEBUG_ENDPOINTS=true
+_debug_endpoints_enabled = os.getenv('ENABLE_DEBUG_ENDPOINTS', 'false').lower() == 'true'
+
 @app.get("/api/v1/test-code-version")
 async def test_code_version():
     """Test endpoint to verify code has reloaded"""
+    if not _debug_endpoints_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
     return {"version": "v2_with_processed_data_fix", "timestamp": "2025-11-29_00:40"}
 
 @app.get("/api/v1/test-db-connection")
 async def test_db_connection():
     """Test MongoDB connection and show document count"""
+    if not _debug_endpoints_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
     try:
         if db is None:
             return {"error": "Database not initialized"}
@@ -1600,6 +1501,8 @@ async def test_db_connection():
 @app.get("/api/v1/test-document/{doc_id}")
 async def test_document(doc_id: str):
     """Test if a specific document can be found"""
+    if not _debug_endpoints_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
     global db
     try:
         if db is None:
@@ -1691,15 +1594,18 @@ async def query_document(request: QueryRequest) -> QueryResponse:
         logger.info(f"✅ Collection reference created: {type(documents).__name__}")
         
         # Log the exact query before execution
-        logger.info(f"🔍 About to query: {{'_id': ObjectId('{request.doc_id}')}}")
+        logger.info(f"🔍 About to query document: {request.doc_id}")
         
         try:
-            obj_id = ObjectId(request.doc_id)
-            logger.info(f"✅ ObjectId created successfully: {obj_id}")
+            obj_id = safe_doc_id(request.doc_id)
+            logger.info(f"✅ Document ID resolved: {obj_id}")
             doc = documents.find_one({'_id': obj_id})
+            # Fallback: try raw string if ObjectId lookup failed
+            if not doc and isinstance(obj_id, ObjectId):
+                doc = documents.find_one({'_id': request.doc_id})
             logger.info(f"🔍 Query executed. Result: {'FOUND' if doc else 'NOT FOUND'}")
         except Exception as e:
-            logger.error(f"❌ Error converting doc_id to ObjectId: {e}")
+            logger.error(f"❌ Error resolving doc_id: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid doc_id format: {request.doc_id}")
         
         if not doc:
@@ -1757,9 +1663,6 @@ async def query_document(request: QueryRequest) -> QueryResponse:
         logger.info(f"🤖 Querying document {request.doc_id}: {request.question}")
         logger.info(f"📄 Context size: {len(context)} chars")
         
-        # Call Llamafile API
-        llamafile_url = os.getenv('LLAMAFILE_URL', 'http://localhost:8080')
-        
         prompt = f"""Based on the following document content, answer the question concisely and accurately.
 
 Document Content:
@@ -1769,27 +1672,27 @@ Question: {request.question}
 
 Answer:"""
         
+        # Call LLaMA via wrapper
+        models = get_models()
+        llama = models.get('llama') if models else None
+        
         try:
-            response = requests.post(
-                f'{llamafile_url}/completion',
-                json={
-                    'prompt': prompt,
-                    'temperature': 0.7,
-                    'max_tokens': 300,
-                    'stop': ['\n\n', 'Question:', 'Document:']
-                },
-                timeout=30
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"Llamafile error: {response.status_code} - {response.text}")
+            if llama is None:
                 raise HTTPException(
                     status_code=503,
-                    detail=f"Llamafile service error: {response.status_code}"
+                    detail="Llamafile service is not available."
                 )
             
-            result = response.json()
-            answer = result.get('content', '').strip()
+            result = llama(
+                prompt,
+                max_tokens=300,
+                temperature=0.7,
+                stop=['\n\n', 'Question:', 'Document:']
+            )
+            
+            answer = ''
+            if result and result.get('choices'):
+                answer = result['choices'][0].get('text', '').strip()
             
             if not answer:
                 answer = "I couldn't generate an answer. Please try rephrasing your question."
@@ -1804,15 +1707,12 @@ Answer:"""
                 timestamp=datetime.utcnow()
             )
             
-        except requests.exceptions.ConnectionError:
+        except HTTPException:
+            raise
+        except Exception as e:
             raise HTTPException(
                 status_code=503,
-                detail="Llamafile service is not running. Please start it on port 8080."
-            )
-        except requests.exceptions.Timeout:
-            raise HTTPException(
-                status_code=504,
-                detail="Llamafile request timed out. Please try again."
+                detail=f"Llamafile service error: {str(e)}"
             )
         
     except HTTPException:
@@ -1891,8 +1791,9 @@ async def conversational_search(request: SearchRequest) -> Dict[str, Any]:
         
         combined_context = '\n\n'.join(context_parts)[:4000]
         
-        # Call Llamafile for answer
-        llamafile_url = os.getenv('LLAMAFILE_URL', 'http://localhost:8080')
+        # Call LLaMA via wrapper for answer
+        models = get_models()
+        llama = models.get('llama') if models else None
         
         prompt = f"""Based on the following documents, answer the question.
 
@@ -1904,22 +1805,20 @@ Question: {request.query}
 Answer:"""
         
         try:
-            response = requests.post(
-                f'{llamafile_url}/completion',
-                json={
-                    'prompt': prompt,
-                    'temperature': 0.7,
-                    'max_tokens': 400,
-                    'stop': ['\n\n', 'Question:', 'Documents:']
-                },
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                answer = result.get('content', '').strip()
+            if llama:
+                result = llama(
+                    prompt,
+                    max_tokens=400,
+                    temperature=0.7,
+                    stop=['\n\n', 'Question:', 'Documents:']
+                )
+                answer = ''
+                if result and result.get('choices'):
+                    answer = result['choices'][0].get('text', '').strip()
+                if not answer:
+                    answer = "I couldn't generate an answer at this time."
             else:
-                answer = "I couldn't generate an answer at this time."
+                answer = "Llamafile service unavailable. Showing document matches only."
         except:
             answer = "Llamafile service unavailable. Showing document matches only."
         
@@ -1935,41 +1834,6 @@ Answer:"""
         raise HTTPException(
             status_code=500,
             detail=f"Search error: {str(e)}"
-        )
-
-
-@app.post("/api/v1/summarize")
-async def summarize_document(request: QueryRequest) -> Dict[str, Any]:
-    """
-    Generate document summary
-    """
-    try:
-        if not request.doc_id:
-            raise HTTPException(status_code=400, detail="doc_id is required")
-        
-        # Call Q&A with summarization question
-        summary_question = request.question or "Summarize this document in 2-3 sentences."
-        query_request = QueryRequest(
-            doc_id=request.doc_id,
-            question=summary_question,
-            context_size=request.context_size
-        )
-        
-        response = await query_document(query_request)
-        
-        return {
-            'doc_id': request.doc_id,
-            'summary': response.answer,
-            'timestamp': datetime.utcnow().isoformat()
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating summary: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Summary error: {str(e)}"
         )
 
 
@@ -2114,13 +1978,49 @@ class EmbeddingRequest(BaseModel):
     model: Optional[str] = Field("all-MiniLM-L6-v2", description="Embedding model")
 
 
-def _ocr_extract_sync(file_path: str, engine: str, ocr_model) -> Dict[str, Any]:
+def _ocr_extract_sync(file_path: str, engine: str, models: Dict[str, Any]) -> Dict[str, Any]:
     """
     Synchronous OCR extraction - runs in ThreadPoolExecutor
-    This prevents blocking the async event loop during CPU-intensive OCR
+    This prevents blocking the async event loop during CPU-intensive OCR.
+    Supports both PaddleOCR and TrOCR engines.
     """
     from PIL import Image
     import numpy as np
+    
+    if engine == "trocr":
+        trocr = models.get('trocr')
+        if not trocr:
+            raise ValueError("TrOCR model not available")
+        
+        processor = trocr['processor']
+        model = trocr['model']
+        device = trocr.get('device', 'cpu')
+        
+        img = Image.open(file_path).convert("RGB")
+        inputs = processor(images=img, return_tensors="pt")
+        pixel_values = inputs["pixel_values"].to(device)
+        
+        import torch
+        with torch.no_grad():
+            generated_ids = model.generate(
+                pixel_values=pixel_values,
+                max_new_tokens=256,
+                num_beams=1,
+                do_sample=False,
+                early_stopping=True
+            )
+        text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        
+        return {
+            'text': text.strip(),
+            'confidence': 0.0,  # TrOCR doesn't provide per-line confidence
+            'line_count': len(text.strip().splitlines()) if text.strip() else 0
+        }
+    
+    # Default: PaddleOCR
+    ocr_model = models.get('ocr')
+    if not ocr_model:
+        raise ValueError("PaddleOCR model not available")
     
     img = Image.open(file_path)
     img_array = np.array(img)
@@ -2163,7 +2063,8 @@ async def ocr_extract_text(request: OCRExtractRequest) -> Dict[str, Any]:
         Extracted text and confidence scores
     """
     try:
-        if not os.path.exists(request.file_path):
+        validated_path = validate_file_path(request.file_path)
+        if not os.path.exists(validated_path):
             raise HTTPException(
                 status_code=404,
                 detail=f"File not found: {request.file_path}"
@@ -2176,20 +2077,26 @@ async def ocr_extract_text(request: OCRExtractRequest) -> Dict[str, Any]:
                 detail="Models not loaded yet"
             )
         
-        ocr_model = models.get('ocr')
-        if not ocr_model:
-            raise HTTPException(status_code=503, detail="OCR model not available")
+        # Validate engine parameter
+        engine = request.engine or "paddleocr"
+        if engine not in ("paddleocr", "trocr"):
+            raise HTTPException(status_code=400, detail="engine must be 'paddleocr' or 'trocr'")
         
-        logger.info(f"[ASYNC] Extracting text from {request.file_path} using {request.engine}")
+        if engine == "paddleocr" and not models.get('ocr'):
+            raise HTTPException(status_code=503, detail="PaddleOCR model not available")
+        if engine == "trocr" and not models.get('trocr'):
+            raise HTTPException(status_code=503, detail="TrOCR model not available")
+        
+        logger.info(f"[ASYNC] Extracting text from {validated_path} using {engine}")
         
         # Run CPU-bound OCR in thread pool (non-blocking)
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             executor,
             _ocr_extract_sync,
-            request.file_path,
-            request.engine,
-            ocr_model
+            validated_path,
+            engine,
+            models
         )
         
         return {
@@ -2197,7 +2104,7 @@ async def ocr_extract_text(request: OCRExtractRequest) -> Dict[str, Any]:
             'text': result['text'],
             'confidence': result['confidence'],
             'line_count': result['line_count'],
-            'engine': request.engine,
+            'engine': engine,
             'timestamp': datetime.utcnow().isoformat()
         }
         
@@ -2315,8 +2222,11 @@ async def ocr_extract_batch(request: BatchOCRRequest) -> Dict[str, Any]:
         
         logger.info(f"[ASYNC BATCH] Processing {len(request.file_paths)} images concurrently")
         
+        # Validate all file paths are within allowed directories
+        validated_paths = [validate_file_path(fp) for fp in request.file_paths]
+        
         # Validate all files exist
-        missing_files = [fp for fp in request.file_paths if not os.path.exists(fp)]
+        missing_files = [fp for fp in validated_paths if not os.path.exists(fp)]
         if missing_files:
             raise HTTPException(
                 status_code=404,
@@ -2333,7 +2243,7 @@ async def ocr_extract_batch(request: BatchOCRRequest) -> Dict[str, Any]:
                 request.engine,
                 ocr_model
             )
-            for file_path in request.file_paths
+            for file_path in validated_paths
         ]
         
         # Wait for all OCR operations to complete (runs in parallel)
@@ -2344,7 +2254,7 @@ async def ocr_extract_batch(request: BatchOCRRequest) -> Dict[str, Any]:
         failed = []
         
         for idx, result in enumerate(results):
-            file_path = request.file_paths[idx]
+            file_path = validated_paths[idx]
             if isinstance(result, Exception):
                 failed.append({
                     'file_path': file_path,
