@@ -857,7 +857,7 @@ async def vector_search(request: SearchRequest) -> Dict[str, Any]:
     """
     Vector search across document embeddings
     
-    Uses all-MiniLM-L6-v2 embeddings stored in MongoDB for similarity search
+    Uses paraphrase-multilingual-MiniLM-L12-v2 embeddings stored in MongoDB for similarity search
     
     Args:
         request: SearchRequest with query text and optional doc_id filter
@@ -2002,7 +2002,7 @@ class EntityExtractionRequest(BaseModel):
 class EmbeddingRequest(BaseModel):
     """Embedding generation request"""
     texts: List[str] = Field(..., description="List of text chunks to embed")
-    model: Optional[str] = Field("all-MiniLM-L6-v2", description="Embedding model")
+    model: Optional[str] = Field("paraphrase-multilingual-MiniLM-L12-v2", description="Embedding model")
 
 
 def _ocr_extract_sync(file_path: str, engine: str, models: Dict[str, Any]) -> Dict[str, Any]:

@@ -198,7 +198,7 @@ def split_pdf_and_find_breaks(
             page_embeddings.append(embedding)
         else:
             # Empty page gets zero embedding
-            page_embeddings.append(np.zeros(384))  # all-MiniLM-L6-v2 output size
+            page_embeddings.append(np.zeros(384))  # paraphrase-multilingual-MiniLM-L12-v2 output size
         
         if (idx + 1) % 5 == 0:
             logger.info(f"  Processed {idx + 1}/{len(images)} pages")

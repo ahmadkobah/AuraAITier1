@@ -22,8 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Pre-download models during build
 # Note: These are downloaded during docker build, not at runtime
 RUN mkdir -p /app/models && \
-    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L12-v2')" && \
-    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" && \
+    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')" && \
     python -c "from transformers import AutoProcessor, AutoModelForCausalLM; \
     processor = AutoProcessor.from_pretrained('microsoft/trocr-large-handwritten'); \
     model = AutoModelForCausalLM.from_pretrained('microsoft/trocr-large-handwritten')" && \
