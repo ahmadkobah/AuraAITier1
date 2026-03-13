@@ -5,6 +5,7 @@ Main endpoints for document processing, search, and Q&A
 
 import os
 import logging
+import hmac
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -291,12 +292,35 @@ async def lifespan(app: FastAPI):
 # FastAPI Application
 # ========================
 
+# API Key for service-to-service authentication
+_API_KEY = os.getenv('AI_SERVICE_API_KEY', '')
+
 app = FastAPI(
     title="AI Service Tier 1",
     description="Lightweight document processing, classification, search, and Q&A",
     version="1.0.0",
     lifespan=lifespan
 )
+
+# ========================
+# API Key Authentication Middleware
+# ========================
+
+# Paths exempt from API key validation (monitoring, docs)
+_API_KEY_EXEMPT_PATHS = frozenset({'/health', '/docs', '/openapi.json', '/redoc'})
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    """Verify X-API-Key header on all requests (except exempt paths).
+    If AI_SERVICE_API_KEY is empty, validation is skipped (dev mode)."""
+    if request.url.path not in _API_KEY_EXEMPT_PATHS and _API_KEY:
+        provided_key = request.headers.get('X-API-Key', '')
+        if not hmac.compare_digest(provided_key, _API_KEY):
+            return JSONResponse(
+                status_code=401,
+                content={'detail': 'Invalid or missing API key'}
+            )
+    return await call_next(request)
 
 # ========================
 # Request Logging Middleware
