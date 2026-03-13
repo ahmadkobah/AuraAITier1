@@ -1,0 +1,22 @@
+# Document Layout Detection - YOLO Dataset Config
+# Source: DocLayNet (IBM) — remapped to 8 project classes
+# Generated for: adaptive-Dokumentenverarbeitung
+
+path: models/yolo/data
+train: images/train
+val: images/val
+
+nc: 8
+names:
+  0: text_block
+  1: table
+  2: figure
+  3: signature
+  4: stamp
+  5: handwriting_region
+  6: header
+  7: footer
+
+# Note: Classes 3 (signature), 4 (stamp), 5 (handwriting_region) are NOT
+# present in DocLayNet. Add annotated examples for these classes manually
+# using Roboflow or Label Studio (see docs/DATA_ANNOTATION_PLAN.md).

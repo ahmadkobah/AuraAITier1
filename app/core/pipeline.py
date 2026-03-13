@@ -481,6 +481,35 @@ async def run_full_ai_pipeline(
                     logger.warning(f"  ⚠️ GPU memory high ({gpu_mem:.1f} MB), clearing cache")
                     torch.cuda.empty_cache()
             
+            # 2b-layout. Full document layout detection with YOLO (if trained model available)
+            # Detects 8 classes: text_block, table, figure, signature, stamp, handwriting, header, footer
+            # Routes each region to the best OCR engine via region_router
+            layout_results = {}
+            layout_available = models.get('yolo_layout') is not None
+            
+            if layout_available:
+                logger.info("  Running document layout detection...")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                try:
+                    from app.services.layout_detection import detect_layout_batch
+                    start_page = logical_doc['start_page']
+                    end_page = logical_doc['end_page']
+                    max_pages_layout = min(end_page + 1, len(images), start_page + 10)
+                    page_images_for_layout = [images[p] for p in range(start_page, max_pages_layout)]
+                    
+                    layout_results = detect_layout_batch(page_images_for_layout, models)
+                    
+                    total_regions = sum(len(v) for v in layout_results.values())
+                    logger.info(f"  Layout detection: {total_regions} regions across {len(layout_results)} pages")
+                    
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception as e:
+                    logger.warning(f"  Layout detection failed, falling back to signature-only: {e}")
+                    layout_results = {}
+            
             # 2c. Detect signatures with YOLOv8n, then OCR with TrOCR Large on cropped region (optional)
             signature_found = False
             signature_text = ""
@@ -489,11 +518,28 @@ async def run_full_ai_pipeline(
             signature_confidence = 0.0
             sig_validation = None
 
+            # If layout detection found signatures, extract them directly
+            if layout_available and layout_results:
+                for page_offset, regions in layout_results.items():
+                    if signature_found:
+                        break
+                    for region in regions:
+                        if region.get('class') == 'signature' and region.get('text', '').strip():
+                            text = region['text'].strip()
+                            if (len(text) >= 2 and
+                                not text.replace('.', '').replace(',', '').isdigit()):
+                                signature_found = True
+                                signature_text = text
+                                signature_box = region.get('box')
+                                signature_confidence = float(region.get('confidence', 0.7))
+                                logger.info(f"  ✓ Signature from layout detection: '{signature_text}'")
+                                break
+
             # Clear GPU cache before signature detection to prevent OOM
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-            if ENABLE_SIGNATURE_DETECTION:
+            if ENABLE_SIGNATURE_DETECTION and not signature_found:
                 logger.info("  Detecting signatures...")
                 from app.services.signature_detection import detect_signatures_batch
                 start_page = logical_doc['start_page']
