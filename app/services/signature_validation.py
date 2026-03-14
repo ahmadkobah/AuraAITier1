@@ -3,6 +3,7 @@ Signature Validation Module
 Uses Llama 3.2 3B to validate and correct TrOCR signature extraction results
 """
 
+import asyncio
 import logging
 from typing import Dict, Any, List, Optional
 
@@ -42,11 +43,8 @@ async def validate_signature_text(
             }
 
         # Get Llama model
-        llama = models.get('llama')
-        if llama is None:
-            from app.models.loader import load_llama_model
-            llama = load_llama_model()
-            models['llama'] = llama
+        from app.models.loader import ensure_llama_loaded
+        llama = ensure_llama_loaded()
 
         if llama is None:
             logger.warning("Llama not available for signature validation")
@@ -91,10 +89,11 @@ Response:"""
         config = get_runtime_config()
         sig_val_tokens = config.get('SIGNATURE_VALIDATION_MAX_TOKENS', 150)
         sig_val_temp = config.get('SIGNATURE_VALIDATION_TEMPERATURE', 0.2)
-        response = llama(
+        response = await asyncio.to_thread(
+            llama,
             prompt,
-            max_tokens=sig_val_tokens,  # Read from Control Panel
-            temperature=sig_val_temp,  # Read from Control Panel
+            max_tokens=sig_val_tokens,
+            temperature=sig_val_temp,
             top_p=0.9
         )
 
@@ -151,11 +150,8 @@ async def extract_names_from_document(text: str, models: Dict[str, Any]) -> List
         List of person names found in document
     """
     try:
-        llama = models.get('llama')
-        if llama is None:
-            from app.models.loader import load_llama_model
-            llama = load_llama_model()
-            models['llama'] = llama
+        from app.models.loader import ensure_llama_loaded
+        llama = ensure_llama_loaded()
 
         if llama is None:
             return []
@@ -174,10 +170,11 @@ Names:"""
         config = get_runtime_config()
         name_tokens = config.get('NAME_EXTRACTION_MAX_TOKENS', 100)
         name_temp = config.get('NAME_EXTRACTION_TEMPERATURE', 0.1)
-        response = llama(
+        response = await asyncio.to_thread(
+            llama,
             prompt,
-            max_tokens=name_tokens,  # Read from Control Panel
-            temperature=name_temp  # Read from Control Panel
+            max_tokens=name_tokens,
+            temperature=name_temp
         )
 
         output = response['choices'][0]['text'].strip()
@@ -219,11 +216,8 @@ async def validate_signature_authenticity(
         }
     """
     try:
-        llama = models.get('llama')
-        if llama is None:
-            from app.models.loader import load_llama_model
-            llama = load_llama_model()
-            models['llama'] = llama
+        from app.models.loader import ensure_llama_loaded
+        llama = ensure_llama_loaded()
 
         if llama is None:
             return {
@@ -262,10 +256,11 @@ Response:"""
         config = get_runtime_config()
         auth_tokens = config.get('AUTHENTICITY_MAX_TOKENS', 200)
         auth_temp = config.get('AUTHENTICITY_TEMPERATURE', 0.3)
-        response = llama(
+        response = await asyncio.to_thread(
+            llama,
             prompt,
-            max_tokens=auth_tokens,  # Read from Control Panel
-            temperature=auth_temp  # Read from Control Panel
+            max_tokens=auth_tokens,
+            temperature=auth_temp
         )
 
         output = response['choices'][0]['text'].strip()

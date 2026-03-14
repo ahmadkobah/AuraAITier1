@@ -104,3 +104,80 @@ manual annotation of production documents or a custom dataset.
 - [ ] Mixed document orientations (portrait + landscape)
 - [ ] Mixed scan qualities (clean + noisy + skewed)
 - [ ] Train/val split is stratified (each class proportionally represented)
+
+## Post-Training Archival
+
+> **After training is complete and the final `document_layout.pt` model is verified,
+> archive all training-related files and delete the originals to free disk space.**
+
+### What to keep in production (DO NOT archive)
+
+| File | Why |
+|---|---|
+| `models/yolo/document_layout.pt` | The trained model — used at runtime |
+| `models/yolo/data/data.yaml` | Class name definitions — referenced by model loader |
+
+### What to archive into `YOLOv8 Training Data/`
+
+Move **all** of the following into a folder called `YOLOv8 Training Data/` (at the repo root or an external location):
+
+| Source | Contents |
+|---|---|
+| `models/yolo/data/images/` | All train + val images (~65K files) |
+| `models/yolo/data/labels/` | All train + val YOLO label .txt files |
+| `models/yolo/downloads/` | Raw Roboflow/Ultralytics dataset downloads |
+| `models/yolo/runs/` | Training run logs, metrics, intermediate checkpoints |
+| `scripts/train_document_yolo.py` | Training script |
+| `scripts/prepare_doclaynet.py` | DocLayNet download + conversion script |
+| `scripts/merge_all_datasets.py` | Dataset merge script |
+| `scripts/rebuild_balanced_dataset.py` | Clean rebuild + downsampling script |
+| `scripts/_search_roboflow.py` | Roboflow Universe search + download script |
+| `scripts/_oversample.py` | Minority class oversampling script |
+| `scripts/_inspect_signature.py` | Signature dataset inspection utility |
+| `scripts/_count_files.py` | Per-class file counter utility |
+| `docs/DATA_ANNOTATION_PLAN.md` | This document (copy for reference) |
+
+### Archive command (run after training is done)
+
+```powershell
+# 1. Create archive folder
+$archive = "YOLOv8 Training Data"
+New-Item -ItemType Directory -Path $archive -Force
+
+# 2. Move large data
+Move-Item "models/yolo/data/images" "$archive/images"
+Move-Item "models/yolo/data/labels" "$archive/labels"
+Move-Item "models/yolo/downloads"   "$archive/downloads" -ErrorAction SilentlyContinue
+Move-Item "models/yolo/runs"        "$archive/runs"      -ErrorAction SilentlyContinue
+
+# 3. Move training scripts
+$scripts = @(
+    "scripts/train_document_yolo.py",
+    "scripts/prepare_doclaynet.py",
+    "scripts/merge_all_datasets.py",
+    "scripts/rebuild_balanced_dataset.py",
+    "scripts/_search_roboflow.py",
+    "scripts/_oversample.py",
+    "scripts/_inspect_signature.py",
+    "scripts/_count_files.py"
+)
+New-Item -ItemType Directory -Path "$archive/scripts" -Force
+foreach ($s in $scripts) {
+    if (Test-Path $s) { Move-Item $s "$archive/scripts/" }
+}
+
+# 4. Copy this doc for reference
+Copy-Item "docs/DATA_ANNOTATION_PLAN.md" "$archive/"
+
+# 5. Verify model file is still in place
+if (Test-Path "models/yolo/document_layout.pt") {
+    Write-Host "✅ Model file intact. Archive complete."
+} else {
+    Write-Host "⚠️ WARNING: document_layout.pt is missing!"
+}
+```
+
+### If you need to retrain later
+
+1. Move `YOLOv8 Training Data/` contents back to their original locations
+2. Or re-download datasets using the archived scripts (API key: check `.env`)

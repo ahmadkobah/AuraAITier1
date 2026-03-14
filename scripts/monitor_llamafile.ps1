@@ -45,7 +45,9 @@ while ($true) {
                         
                         # Restart llamafile in a new window
                         $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
-                        Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$scriptPath'; Write-Host '🚀 Auto-restarting Llamafile...' -ForegroundColor Cyan; & '.\llama-3.2-3b.exe' --server --host 127.0.0.1 --port 8080 -ngl 999 -c 8192 --nobrowser"
+                        $projectRoot = Split-Path -Parent $scriptPath
+                        $llamafilePath = Join-Path $projectRoot "models\llamafile\llama-3.2-3b.exe"
+                        Start-Process powershell -ArgumentList "-NoExit", "-Command", "Write-Host '🚀 Auto-restarting Llamafile...' -ForegroundColor Cyan; & '$llamafilePath' --server --host 127.0.0.1 --port 8080 -ngl 999 -c 8192 --nobrowser"
                         
                         Write-Host "✓ Llamafile restarted" -ForegroundColor Green
                         Start-Sleep -Seconds 15  # Wait for restart

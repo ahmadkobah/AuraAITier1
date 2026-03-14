@@ -3,6 +3,7 @@ Structured Data Extraction Module
 Uses Llama 3.2 3B to extract structured fields from documents
 """
 
+import asyncio
 import logging
 import json
 import re
@@ -454,10 +455,11 @@ Return JSON with extracted values:
         config = get_runtime_config()
         extraction_tokens = config.get('EXTRACTION_MAX_TOKENS', 600)
         extraction_temp = config.get('EXTRACTION_TEMPERATURE', 0.1)
-        response = llama(
+        response = await asyncio.to_thread(
+            llama,
             prompt,
-            max_tokens=extraction_tokens,  # Read from Control Panel
-            temperature=extraction_temp,  # Read from Control Panel
+            max_tokens=extraction_tokens,
+            temperature=extraction_temp,
             top_p=0.9,
             stop=["}}\n\n", "}\n\nNote", "}\n\nThe", "Document", "Text", "\n\nExplanation"]
         )
@@ -812,10 +814,11 @@ JSON:"""
         config = get_runtime_config()
         entity_tokens = config.get('ENTITY_EXTRACTION_MAX_TOKENS', 400)
         entity_temp = config.get('ENTITY_EXTRACTION_TEMPERATURE', 0.1)
-        response = llama(
+        response = await asyncio.to_thread(
+            llama,
             prompt,
-            max_tokens=entity_tokens,  # Read from Control Panel
-            temperature=entity_temp,  # Read from Control Panel
+            max_tokens=entity_tokens,
+            temperature=entity_temp,
             top_p=0.9
         )
 
@@ -920,7 +923,8 @@ async def extract_with_prompt(
         
         # Generate extraction
         try:
-            response = llama(
+            response = await asyncio.to_thread(
+                llama,
                 prompt_text,
                 max_tokens=max_tokens,
                 temperature=temperature,

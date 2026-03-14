@@ -3,6 +3,7 @@ Document Splitter - Split PDFs into logical documents
 Uses PaddleOCR for text extraction and embeddings for break detection
 """
 
+import asyncio
 import logging
 import os
 from typing import List, Dict, Any, Tuple
@@ -458,6 +459,7 @@ async def classify_with_reasoning(
         # Prepare reasoning prompt
         doc_type = initial_classification['label']
         confidence = initial_classification['score']
+        original_confidence = initial_classification['score']
         
         # Get low confidence threshold from Control Panel config
         from app.api.config_endpoints import get_runtime_config
@@ -498,7 +500,8 @@ Response:"""
         # Get temperature from config (already loaded above)
         reasoning_temp = config.get('CLASSIFICATION_REASONING_TEMPERATURE', 0.3)
 
-        response = llama(
+        response = await asyncio.to_thread(
+            llama,
             prompt,
             max_tokens=200,
             temperature=reasoning_temp,
@@ -522,7 +525,7 @@ Response:"""
                 key_indicators = [ind.strip() for ind in indicators_str.split(',')]
 
         # Override classification if initial confidence was very low and Llama provided a type
-        if confidence < 0.15 and llama_doc_type:
+        if original_confidence < low_confidence_threshold and llama_doc_type:
             logger.info(f"✓ Overriding low-confidence classification: '{doc_type}' ({confidence:.2%}) → '{llama_doc_type}' (Llama)")
             doc_type = llama_doc_type
             # Read override confidence from Control Panel
@@ -542,7 +545,7 @@ Response:"""
             'reasoning': reasoning or f"Classified as {doc_type} based on content analysis.",
             'key_indicators': key_indicators,
             'validated': validated,
-            'llama_override': confidence < 0.15 and llama_doc_type is not None
+            'llama_override': original_confidence < low_confidence_threshold and llama_doc_type is not None
         }
 
     except Exception as e:

@@ -12,6 +12,7 @@ import numpy as np
 import os
 import sys
 import requests
+import threading
 from typing import Dict, List, Any, Optional
 
 # Fix for "I/O operation on closed file" with colorama in background tasks
@@ -34,6 +35,7 @@ logger = logging.getLogger("table_extraction")
 # Global table extraction engine (lazy loaded)
 _table_engine = None
 _is_v3 = False  # Track which version we're using
+_table_engine_lock = threading.Lock()
 
 
 def convert_numpy_types(obj):
@@ -63,7 +65,12 @@ def get_table_engine():
     """Get or initialize the PPStructure engine for table extraction"""
     global _table_engine, _is_v3
     
-    if _table_engine is None:
+    if _table_engine is not None:
+        return _table_engine
+    
+    with _table_engine_lock:
+        if _table_engine is not None:
+            return _table_engine
         try:
             logger.info("Initializing PPStructure for table extraction...")
             

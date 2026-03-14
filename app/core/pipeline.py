@@ -67,7 +67,8 @@ def is_llamafile_healthy() -> bool:
         from app.api.config_endpoints import get_runtime_config
         config = get_runtime_config()
         health_timeout = config.get('LLAMAFILE_HEALTH_TIMEOUT', 2)
-        response = requests.get('http://127.0.0.1:8080/health', timeout=health_timeout)
+        llamafile_url = os.getenv('LLAMAFILE_URL', 'http://127.0.0.1:8080')
+        response = requests.get(f"{llamafile_url}/health", timeout=health_timeout)
         return response.status_code == 200
     except requests.exceptions.RequestException as e:
         # LLaMA not available - this is expected if not started
@@ -278,13 +279,20 @@ async def run_full_ai_pipeline(
             result = extract_text_basic(pdf_file_path, models)
             # extract_text_basic returns a dict {'text': ..., 'ocr_confidence': ...}
             full_text = result['text'] if isinstance(result, dict) else result
+            ocr_conf = (result.get('ocr_confidence', {'avg_confidence': 0.5, 'min_confidence': 0.5})
+                        if isinstance(result, dict)
+                        else {'avg_confidence': 0.5, 'min_confidence': 0.5})
+            search_model = models.get('sentence_transformer_search')
+            doc_emb = (search_model.encode(full_text, convert_to_tensor=False).tolist()
+                       if search_model and full_text.strip() else [])
             logical_documents = [{
                 'doc_num': 1,
                 'start_page': 0,
                 'end_page': 0,
                 'page_count': 1,
                 'text': full_text,
-                'embedding': None
+                'ocr_confidence': ocr_conf,
+                'embedding': doc_emb
             }]
         
         _checkpoint('pdf_split', {'doc_count': len(logical_documents)})
@@ -388,6 +396,11 @@ async def run_full_ai_pipeline(
             raise ValueError(error_msg)
         
         _checkpoint('images_converted', {'page_count': len(images)})
+
+        # Fix page range for non-split mode (Bug #4 + #7)
+        if not ENABLE_PDF_SPLITTING and images and len(logical_documents) == 1:
+            logical_documents[0]['end_page'] = len(images) - 1
+            logical_documents[0]['page_count'] = len(images)
         
         # ========================
         # Process Each Logical Document
@@ -418,9 +431,13 @@ async def run_full_ai_pipeline(
                 if ocr_confidence:
                     logger.info(f"  OCR confidence: avg={ocr_confidence.get('avg_confidence', 0):.0%}, min={ocr_confidence.get('min_confidence', 0):.0%}")
                 
+                # Pass page image for REVIEW tier TrOCR fallback (Bug #12)
+                start_pg = logical_doc.get('start_page', 0)
+                page_img = images[start_pg] if images and start_pg < len(images) else None
+
                 try:
                     ocr_validation = await asyncio.wait_for(
-                        validate_ocr_quality(doc_text, models, ocr_confidence),
+                        validate_ocr_quality(doc_text, models, ocr_confidence, page_image=page_img),
                         timeout=float(ocr_timeout)
                     )
                     
@@ -640,6 +657,27 @@ async def run_full_ai_pipeline(
                 elif signature_found and not ENABLE_SIGNATURE_VALIDATION:
                     logger.info("  ⏸️ Signature validation disabled - skipping")
 
+            # Collect ALL layout region data + merge handwriting text (Bug #8 + #23)
+            layout_enriched = []
+            layout_text_parts = []
+            if layout_available and layout_results:
+                for page_offset, regions in layout_results.items():
+                    for region in regions:
+                        layout_enriched.append({
+                            'page': page_offset,
+                            'class': region.get('class'),
+                            'confidence': region.get('confidence', 0.0),
+                            'box': region.get('box'),
+                            'engine': region.get('engine', ''),
+                            'text': region.get('text', '')
+                        })
+                        # Merge handwriting text into doc_text for extraction + search
+                        if region.get('class') == 'handwriting_region' and region.get('text', '').strip():
+                            layout_text_parts.append(region['text'].strip())
+                if layout_text_parts:
+                    doc_text += "\n\n[Handwritten Content]\n" + "\n".join(layout_text_parts)
+                    logger.info(f"  ✓ Merged {len(layout_text_parts)} handwriting regions into doc_text")
+
             # 2e. Extract structured data based on document type (optional, with timeout)
             structured_extraction = {'success': False, 'extracted_fields': {}}
             if ENABLE_STRUCTURED_EXTRACTION:
@@ -788,6 +826,10 @@ async def run_full_ai_pipeline(
                     'issues_found': ocr_validation.get('issues_found', [])
                 },
 
+                # Layout Analysis
+                'layout_regions': layout_enriched if layout_enriched else [],
+                'stamp_detected': any(r.get('class') == 'stamp' for r in layout_enriched) if layout_enriched else False,
+
                 # Signature Detection & Validation
                 'signature_detected': signature_found,
                 'signature_confidence': signature_confidence,
@@ -863,7 +905,10 @@ async def run_full_ai_pipeline(
         # Mark as failed
         try:
             # Convert doc_id to ObjectId if it's a string
-            obj_id = ObjectId(doc_id) if isinstance(doc_id, str) else doc_id
+            try:
+                obj_id = ObjectId(doc_id) if isinstance(doc_id, str) else doc_id
+            except Exception:
+                obj_id = doc_id  # Use string _id directly
             
             # Get database collection (db is defined at start of function)
             db = db_connection
@@ -883,7 +928,7 @@ async def run_full_ai_pipeline(
     finally:
         # Resource cleanup: close PIL images and release GPU memory
         try:
-            if 'images' in dir() and images is not None:
+            if 'images' in locals() and images is not None:
                 for img in images:
                     try:
                         img.close()
@@ -895,7 +940,7 @@ async def run_full_ai_pipeline(
                 torch.cuda.empty_cache()
             # Clean up temp files for this document
             try:
-                cleanup_temp_files(str(original_doc_id) if 'original_doc_id' in dir() else str(doc_id))
+                cleanup_temp_files(str(original_doc_id) if 'original_doc_id' in locals() else str(doc_id))
             except Exception:
                 pass
         except Exception as cleanup_err:
@@ -953,8 +998,8 @@ async def generate_summary(text: str, models: Dict[str, Any]) -> str:
         config = get_runtime_config()
         llama_temp = config.get('LLAMA_TEMPERATURE', 0.3)
         llama_tokens = config.get('LLAMA_MAX_TOKENS', 512)
-        response = llama(
-            prompt,
+        response = await asyncio.to_thread(
+            llama, prompt,
             max_tokens=llama_tokens,  # Read from Control Panel
             temperature=llama_temp,  # Read from Control Panel
             top_p=0.9

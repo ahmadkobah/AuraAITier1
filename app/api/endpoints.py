@@ -286,6 +286,15 @@ async def lifespan(app: FastAPI):
             logger.info("✓ MongoDB connection closed")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
+    
+    # Release GPU memory
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info("✓ GPU cache cleared")
+    except Exception as e:
+        logger.warning(f"GPU cleanup error: {e}")
 
 
 # ========================
@@ -367,6 +376,10 @@ app.add_middleware(
 from app.api.config_endpoints import config_router
 app.include_router(config_router)
 logger.info("✅ Configuration router registered at /api/v1/config")
+
+from app.api.sync_endpoints import sync_router
+app.include_router(sync_router)
+logger.info("✅ Sync router registered (documents, search, classifications, prompts)")
 
 
 # ========================
@@ -1911,8 +1924,8 @@ async def extract_tables(
                         page_tmp_path = page_tmp.name
                     
                     try:
-                        # Extract tables from page
-                        page_tables = extract_tables_from_image(page_tmp_path)
+                        # Extract tables from page (run in thread to avoid blocking event loop)
+                        page_tables = await asyncio.to_thread(extract_tables_from_image, page_tmp_path)
                         
                         # Add page number to each table
                         for table in page_tables:
@@ -1923,7 +1936,7 @@ async def extract_tables(
             else:
                 # Single image file
                 logger.info(f"Extracting tables from image: {file.filename}")
-                all_tables = extract_tables_from_image(tmp_path)
+                all_tables = await asyncio.to_thread(extract_tables_from_image, tmp_path)
                 for table in all_tables:
                     table['page'] = 1
             
@@ -2045,7 +2058,7 @@ def _ocr_extract_sync(file_path: str, engine: str, models: Dict[str, Any]) -> Di
         }
     
     # Default: PaddleOCR
-    ocr_model = models.get('ocr')
+    ocr_model = models.get('paddleocr')
     if not ocr_model:
         raise ValueError("PaddleOCR model not available")
     
@@ -2055,17 +2068,25 @@ def _ocr_extract_sync(file_path: str, engine: str, models: Dict[str, Any]) -> Di
     # PaddleOCR inference (CPU-bound operation)
     result = ocr_model.ocr(img_array, cls=True)
     
-    # Parse results
+    # Parse results (supports both PP-OCRv5 dict and legacy list format)
     extracted_text = ""
     confidence_scores = []
     
-    if result and len(result) > 0:
-        for line in result[0]:
-            if line:
-                text = line[1][0]
-                confidence = line[1][1]
-                extracted_text += text + "\n"
-                confidence_scores.append(confidence)
+    if result and len(result) > 0 and result[0]:
+        ocr_data = result[0]
+        if isinstance(ocr_data, dict) and 'rec_texts' in ocr_data:
+            # PP-OCRv5 dict format
+            extracted_text = "\n".join(ocr_data['rec_texts'])
+            confidence_scores = list(ocr_data.get('rec_scores', []))
+        else:
+            # Legacy list format
+            for line in ocr_data:
+                if line and isinstance(line, (list, tuple)) and len(line) >= 2:
+                    text_part = line[1]
+                    if isinstance(text_part, (list, tuple)) and len(text_part) >= 1:
+                        extracted_text += str(text_part[0]) + "\n"
+                        if len(text_part) >= 2:
+                            confidence_scores.append(float(text_part[1]))
     
     avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.0
     
@@ -2109,7 +2130,7 @@ async def ocr_extract_text(request: OCRExtractRequest) -> Dict[str, Any]:
         if engine not in ("paddleocr", "trocr"):
             raise HTTPException(status_code=400, detail="engine must be 'paddleocr' or 'trocr'")
         
-        if engine == "paddleocr" and not models.get('ocr'):
+        if engine == "paddleocr" and not models.get('paddleocr'):
             raise HTTPException(status_code=503, detail="PaddleOCR model not available")
         if engine == "trocr" and not models.get('trocr'):
             raise HTTPException(status_code=503, detail="TrOCR model not available")
@@ -2243,8 +2264,7 @@ async def ocr_extract_batch(request: BatchOCRRequest) -> Dict[str, Any]:
                 detail="Models not loaded yet"
             )
         
-        ocr_model = models.get('ocr')
-        if not ocr_model:
+        if not models.get('paddleocr'):
             raise HTTPException(status_code=503, detail="OCR model not available")
         
         logger.info(f"[ASYNC BATCH] Processing {len(request.file_paths)} images concurrently")
@@ -2268,7 +2288,7 @@ async def ocr_extract_batch(request: BatchOCRRequest) -> Dict[str, Any]:
                 _ocr_extract_sync,
                 file_path,
                 request.engine,
-                ocr_model
+                models
             )
             for file_path in validated_paths
         ]

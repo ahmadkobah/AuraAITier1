@@ -45,12 +45,25 @@ def crop_region(image: np.ndarray, box: Dict[str, int], pad: int = 5) -> np.ndar
 
 def _ocr_with_paddle(crop_img: np.ndarray, models: Dict[str, Any]) -> str:
     """Run PaddleOCR on a cropped region."""
-    ocr = models.get('ocr')
+    ocr = models.get('paddleocr')
     if not ocr:
         return ""
     result = ocr.ocr(crop_img, cls=True)
     if result and result[0]:
-        return "\n".join(line[1][0] for line in result[0] if line)
+        ocr_data = result[0]
+        # PP-OCRv5 returns dict with rec_texts
+        if isinstance(ocr_data, dict) and 'rec_texts' in ocr_data:
+            return "\n".join(ocr_data['rec_texts'])
+        # Legacy format: list of [box, (text, confidence)]
+        lines = []
+        for line in ocr_data:
+            if line and isinstance(line, (list, tuple)) and len(line) >= 2:
+                text_part = line[1]
+                if isinstance(text_part, (list, tuple)) and len(text_part) >= 1:
+                    lines.append(str(text_part[0]))
+                elif isinstance(text_part, str):
+                    lines.append(text_part)
+        return "\n".join(lines)
     return ""
 
 
@@ -63,7 +76,7 @@ def _ocr_with_trocr(crop_img: np.ndarray, models: Dict[str, Any]) -> str:
     import torch
     processor = trocr['processor']
     model = trocr['model']
-    device = trocr.get('device', 'cpu')
+    device = next(model.parameters()).device
 
     pil_img = Image.fromarray(cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB))
     inputs = processor(images=pil_img, return_tensors="pt")

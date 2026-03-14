@@ -50,3 +50,5 @@ dist/
 *.png
 *.jpg
 *.jpeg
+
+YOLOv8 Training Data/

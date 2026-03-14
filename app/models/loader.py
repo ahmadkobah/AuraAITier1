@@ -174,15 +174,23 @@ class SuppressOutput:
     def __enter__(self):
         self._original_stdout = sys.stdout
         self._original_stderr = sys.stderr
-        sys.stdout = open(os.devnull, 'w')
-        sys.stderr = open(os.devnull, 'w')
+        self._devnull_out = open(os.devnull, 'w')
+        self._devnull_err = open(os.devnull, 'w')
+        sys.stdout = self._devnull_out
+        sys.stderr = self._devnull_err
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stdout.close()
-        sys.stderr.close()
         sys.stdout = self._original_stdout
         sys.stderr = self._original_stderr
+        try:
+            self._devnull_out.close()
+        except Exception:
+            pass
+        try:
+            self._devnull_err.close()
+        except Exception:
+            pass
 
 logger = logging.getLogger("model_loader")
 
@@ -528,8 +536,8 @@ def load_llama_model():
                 Returns:
                     {'choices': [{'text': '...'}]}
                 """
-                # Dynamic context window check: llamafile default is 4096
-                context_window = int(os.getenv('LLAMA_CONTEXT_WINDOW', '4096'))
+                # Dynamic context window check: llamafile started with -c 8192
+                context_window = int(os.getenv('LLAMA_CONTEXT_WINDOW', '8192'))
                 # Rough estimate: 1 token ≈ 4 chars for English text
                 estimated_prompt_tokens = len(prompt) // 4
                 available_tokens = context_window - estimated_prompt_tokens

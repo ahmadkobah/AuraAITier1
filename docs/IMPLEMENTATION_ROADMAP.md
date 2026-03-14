@@ -183,22 +183,23 @@ These endpoints exist in AI Service but no external consumer calls them:
 
 ---
 
-## 3. Missing Endpoints — Already Broken Contracts
+## 3. Missing Endpoints — ~~Already Broken Contracts~~ ✅ IMPLEMENTED
 
-These endpoints are called by external systems but **DO NOT EXIST** in the AI Service:
+> **Status:** All 7 missing endpoints implemented on 2026-03-14 in `app/api/sync_endpoints.py`
+> Router registered in `endpoints.py` via `app.include_router(sync_router)`
 
-| Missing Endpoint | Called By | File | Impact |
+These endpoints were called by external systems but did not exist in the AI Service. **Now implemented:**
+
+| Endpoint | Called By | File | Status |
 |---|---|---|---|
-| `DELETE /api/v1/documents/{id}` | Aura BE | `DokumentController.js` L195 | **Silent failure** — Aura catches the error and ignores it. Documents remain in AI MongoDB after deletion from Aura. |
-| `GET /api/v1/search/config` | CP BE | `searchRoutes.js` L124 | **Sync fails silently** — CP logs warning, search configs are never bidirectionally synced. |
-| `POST /api/v1/search/config/bulk-update` | CP BE | `searchRoutes.js` L170 | **Sync fails silently** — bulk search config push never reaches AI service. |
-| `POST /api/v1/classify` (with prefix) | CP FE ref | `PromptsManagement.jsx` L11 | **UI reference only** — listed as available endpoint but actual calls use `/classify` (without prefix). Not broken but inconsistent. |
-| `GET /api/v1/classifications` | CP BE | `classificationRoutes.js` L140 | **Sync fails silently** — CP logs warning, cannot fetch existing classifications for conflict resolution. Falls back to full push. |
-| `POST /api/v1/classifications/bulk-update` | CP BE | `classificationRoutes.js` L185 | **Sync fails silently** — classification sync to AI service never completes. AI service uses hardcoded label list only. |
-| `GET /api/v1/prompts` | CP BE | `promptRoutes.js` L287 | **Sync fails silently** — CP cannot fetch existing prompts from AI service for conflict resolution. |
-| `POST /api/v1/prompts/bulk-update` | CP BE | `promptRoutes.js` L333 | **Sync fails silently** — prompt configs never reach AI service. Prompt management in CP is dead letter. |
-
-**These are pre-existing integration gaps, not caused by any fix in the plan.** They should be addressed as part of the roadmap.
+| ✅ `DELETE /api/v1/documents/{id}` | Aura BE | `DokumentController.js` L195 | Deletes from MongoDB + invalidates FAISS index |
+| ✅ `GET /api/v1/search/config` | CP BE | `searchRoutes.js` L124 | Returns `{ configs: [...] }` from `search_configs` collection |
+| ✅ `POST /api/v1/search/config/bulk-update` | CP BE | `searchRoutes.js` L170 | Upserts configs, returns `{ success, synced, message }` |
+| `POST /api/v1/classify` (with prefix) | CP FE ref | `PromptsManagement.jsx` L11 | **UI reference only** — not broken, just inconsistent naming |
+| ✅ `GET /api/v1/classifications` | CP BE | `classificationRoutes.js` L140 | Returns `{ classifications: [...] }` — MongoDB or hardcoded fallback (31 labels) |
+| ✅ `POST /api/v1/classifications/bulk-update` | CP BE | `classificationRoutes.js` L185 | Upserts classifications, returns `{ success, synced, message }` |
+| ✅ `GET /api/v1/prompts` | CP BE | `promptRoutes.js` L287 | Returns `{ prompts: [...] }` from `prompts` collection |
+| ✅ `POST /api/v1/prompts/bulk-update` | CP BE | `promptRoutes.js` L333 | Upserts prompts, returns `{ success, synced, message }` |
 
 ---
 
@@ -875,17 +876,17 @@ STAGE 10: Deploy AI Service — Phase 7 (YOLO Model)
 
 All 40 fixes apply here. This is where all the work happens. See `PIPELINE_FIX_PLAN.md` for details.
 
-**Additionally, implement these NEW endpoints for existing broken contracts:**
+**✅ NEW sync endpoints implemented (2026-03-14) in `app/api/sync_endpoints.py`:**
 
-| New Endpoint | Purpose | Called By |
-|---|---|---|
-| `DELETE /api/v1/documents/{id}` | Delete document from AI MongoDB | Aura BE `DokumentController.js` |
-| `GET /api/v1/search/config` | Return search configuration | CP BE `searchRoutes.js` |
-| `POST /api/v1/search/config/bulk-update` | Accept search config push | CP BE `searchRoutes.js` |
-| `GET /api/v1/classifications` | Return classification definitions | CP BE `classificationRoutes.js` |
-| `POST /api/v1/classifications/bulk-update` | Accept classification sync push | CP BE `classificationRoutes.js` |
-| `GET /api/v1/prompts` | Return prompt configurations | CP BE `promptRoutes.js` |
-| `POST /api/v1/prompts/bulk-update` | Accept prompt config sync push | CP BE `promptRoutes.js` |
+| Endpoint | Purpose | Called By | Status |
+|---|---|---|---|
+| `DELETE /api/v1/documents/{id}` | Delete document + FAISS invalidation | Aura BE `DokumentController.js` | ✅ Implemented |
+| `GET /api/v1/search/config` | Return search configuration | CP BE `searchRoutes.js` | ✅ Implemented |
+| `POST /api/v1/search/config/bulk-update` | Accept search config push | CP BE `searchRoutes.js` | ✅ Implemented |
+| `GET /api/v1/classifications` | Return classification definitions (MongoDB or 31-label fallback) | CP BE `classificationRoutes.js` | ✅ Implemented |
+| `POST /api/v1/classifications/bulk-update` | Accept classification sync push | CP BE `classificationRoutes.js` | ✅ Implemented |
+| `GET /api/v1/prompts` | Return prompt configurations | CP BE `promptRoutes.js` | ✅ Implemented |
+| `POST /api/v1/prompts/bulk-update` | Accept prompt config sync push | CP BE `promptRoutes.js` | ✅ Implemented |
 
 ### Aura Backend
 
@@ -1043,27 +1044,28 @@ All 40 fixes apply here. This is where all the work happens. See `PIPELINE_FIX_P
 ____________________________________________________________________________________-
 
 
-#	Endpoint	Purpose
-1	DELETE /api/v1/documents/{id}	Orphaned document cleanup
-2	GET /api/v1/search/config	Search config sync
-3	POST /api/v1/search/config/bulk-update	Push search config
-4	GET /api/v1/classifications	Fetch classification definitions
-5	POST /api/v1/classifications/bulk-update	Push classification sync
-6	GET /api/v1/prompts	Fetch prompt config
-7	POST /api/v1/prompts/bulk-update	Push prompt config
+#	Endpoint	Purpose	Status
+1	DELETE /api/v1/documents/{id}	Orphaned document cleanup	✅ Implemented
+2	GET /api/v1/search/config	Search config sync	✅ Implemented
+3	POST /api/v1/search/config/bulk-update	Push search config	✅ Implemented
+4	GET /api/v1/classifications	Fetch classification definitions	✅ Implemented
+5	POST /api/v1/classifications/bulk-update	Push classification sync	✅ Implemented
+6	GET /api/v1/prompts	Fetch prompt config	✅ Implemented
+7	POST /api/v1/prompts/bulk-update	Push prompt config	✅ Implemented
 
+All 7 endpoints implemented on 2026-03-14 in `app/api/sync_endpoints.py`.
 
 3. Fix 7.5 — Pipeline Layout Routing (BLOCKED by 7.4)
 Cannot implement layout-aware routing without the trained YOLO model.
 
 
 79 total items tracked across 5 docs
-~67 DONE, 7 missing endpoints (implementable now), 2 blocked on training data, 3 doc updates needed
-Highest-impact next step: Implement the 7 missing AI Service endpoints to unblock ControlPanel sync
-Want me to implement the 7 missing endpoints, update the docs, or both?
+~74 DONE, 0 missing endpoints, 2 blocked on training data, 3 doc updates needed
 
 
 
 Download DocLayNet, convert + remap, then train with your existing train_document_yolo.py. This gives you the best model quality for German business documents and you already have the training infrastructure. 
 
 also for english ? 
+
+Important note: DocLayNet covers 5 of the 8 classes (text_block, table, figure, header, footer). The 3 remaining classes — signature, stamp, handwriting_region — are not in DocLayNet and need manual annotation with tools like Roboflow or CVAT using your own German document samples. You can merge those annotations into the same data structure before training.

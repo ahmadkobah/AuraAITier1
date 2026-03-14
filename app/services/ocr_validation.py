@@ -4,6 +4,7 @@ Uses Llama 3.2 3B to validate and improve OCR output quality
 Supports Smart OCR Routing with 4 tiers: SKIP, LIGHT, FULL, REVIEW
 """
 
+import asyncio
 import logging
 import re
 from typing import Dict, Any, List, Tuple, Optional
@@ -204,7 +205,8 @@ Text to correct:
 
 Return ONLY the corrected text, nothing else."""
                     
-                    result = llama(
+                    result = await asyncio.to_thread(
+                        llama,
                         review_prompt,
                         max_tokens=ocr_max_tokens,
                         temperature=ocr_temp,
@@ -248,7 +250,8 @@ Return ONLY the corrected text, nothing else."""
                 'quality_score': initial_quality,
                 'issues_found': ['Llama model unavailable'],
                 'corrections_made': 0,
-                'confidence': initial_quality
+                'confidence': initial_quality,
+                'routing_tier': 'full'
             }
 
         # Detect potential issues
@@ -261,7 +264,8 @@ Return ONLY the corrected text, nothing else."""
                 'quality_score': initial_quality,
                 'issues_found': [],
                 'corrections_made': 0,
-                'confidence': 0.95
+                'confidence': 0.95,
+                'routing_tier': 'full'
             }
 
         logger.info(f"Detected {len(issues)} potential OCR issues")
@@ -295,10 +299,11 @@ Corrected text:"""
         ocr_temp = config.get('OCR_VALIDATION_TEMPERATURE', 0.05)  # Even lower for minimal creativity
         ocr_max_tokens = config.get('OCR_VALIDATION_MAX_TOKENS', 2500)  # Enough for full pages
 
-        response = llama(
+        response = await asyncio.to_thread(
+            llama,
             prompt,
             max_tokens=ocr_max_tokens,
-            temperature=ocr_temp,  # Very low to preserve structure
+            temperature=ocr_temp,
             top_p=0.85,
             stop=["\n\nThe only", "\n\nNote that", "\n\nPlease", "\n\nCorrections made:", "\n\nExplanation:"]
         )
@@ -528,10 +533,11 @@ Output:"""
         config = get_runtime_config()
         val_tokens = config.get('VALIDATION_QUALITY_MAX_TOKENS', 200)
         val_temp = config.get('VALIDATION_QUALITY_TEMPERATURE', 0.1)
-        response = llama(
+        response = await asyncio.to_thread(
+            llama,
             prompt,
-            max_tokens=val_tokens,  # Read from Control Panel
-            temperature=val_temp  # Read from Control Panel
+            max_tokens=val_tokens,
+            temperature=val_temp
         )
 
         output = response['choices'][0]['text'].strip()

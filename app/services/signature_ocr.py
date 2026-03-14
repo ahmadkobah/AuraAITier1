@@ -1,9 +1,12 @@
+import logging
 import os
 from typing import Dict, Any, List, Tuple, Optional
 import cv2
 import numpy as np
 from PIL import Image
 import torch
+
+logger = logging.getLogger("signature_ocr")
 
 # signature boxes are expected from YOLOv8n upstream; no local detector import
 
@@ -61,7 +64,7 @@ def ocr_signature(image_path: str, models: Dict[str, Any], max_new_tokens: int =
         device = 'cuda'
         logger.info("TrOCR moved to GPU for inference")
     else:
-        device = trocr['device']
+        device = next(model.parameters()).device
 
     try:
         # Prepare input
