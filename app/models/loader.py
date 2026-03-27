@@ -13,8 +13,7 @@ MODELS MANAGED:
 --------------
 1. PaddleOCR          - Printed text OCR (CPU-based, ~200MB RAM)
 2. TrOCR Large        - Handwritten text OCR (GPU: ~1.5GB VRAM)
-3. YOLOv8n            - Signature detection (GPU: ~15MB VRAM)
-4. SentenceTransformer- Document embeddings (GPU: ~400MB VRAM)
+3. SentenceTransformer- Document embeddings (GPU: ~400MB VRAM)
    - paraphrase-multilingual-MiniLM-L12-v2 (classification + search, 384-dim)
 
 GPU MANAGEMENT STRATEGY:
@@ -61,7 +60,7 @@ USAGE EXAMPLE:
     # Get models for use
     models = get_models()
     trocr = models['trocr']
-    yolo = models['yolo']
+    trocr = models['trocr']
 
 MEMORY MANAGEMENT:
 -----------------
@@ -112,7 +111,7 @@ logging.getLogger('ppocr').setLevel(logging.CRITICAL)
 logging.getLogger('transformers').setLevel(logging.CRITICAL)
 logging.getLogger('sentence_transformers').setLevel(logging.CRITICAL)
 logging.getLogger('filelock').setLevel(logging.CRITICAL)
-logging.getLogger('ultralytics').setLevel(logging.CRITICAL)
+
 logging.getLogger('urllib3').setLevel(logging.CRITICAL)
 logging.getLogger('requests').setLevel(logging.CRITICAL)
 
@@ -306,7 +305,6 @@ def load_all_models() -> Dict[str, Any]:
             'sentence_transformer_search': SentenceTransformer,
             'paddleocr': PaddleOCR,
             'trocr': (processor, model),
-            'yolo': YOLO model for signature detection
         }
     """
     global models
@@ -346,21 +344,13 @@ def load_all_models() -> Dict[str, Any]:
         # 4. Load TrOCR for handwritten text (preload on startup)
         models['trocr'] = load_trocr_model()
         
-        # 5. Load YOLOv8n for signature detection (preload on startup)
-        models['yolo'] = load_yolo_model()
-        
-        # 5b. Load YOLO document layout model (if trained)
-        models['yolo_layout'] = load_yolo_layout_model()
-        
-        # 6. Load Llama 3.2 3B for Q&A (preload on startup if available)
+        # 5. Load Llama 3.2 3B for Q&A (preload on startup if available)
         models['llama'] = load_llama_model()
         
         # Log status summary
         logger.info("AI Models Status:")
         logger.info(f"  PaddleOCR: {'Ready' if models.get('paddleocr') else 'Not Available'}")
         logger.info(f"  TrOCR: {'Ready' if models.get('trocr') else 'Failed'}")
-        logger.info(f"  YOLOv8n: {'Ready' if models.get('yolo') else 'Failed'}")
-        logger.info(f"  YOLO Layout: {'Ready' if models.get('yolo_layout') else 'Not Available (train with train_document_yolo.py)'}")
         logger.info(f"  Llama 3.2: {'Ready' if models.get('llama') else 'Not Available'}")
         logger.info(f"  Sentence Transformers: Ready")
         
@@ -416,85 +406,6 @@ def load_trocr_model():
         return models['trocr']
         
     except Exception as e:
-        return None
-
-
-def load_yolo_model():
-    """
-    Load YOLOv8n for signature detection
-    Uses pre-trained model or fine-tuned signature model if available
-    """
-    global models
-    
-    if models.get('yolo') is not None:
-        return models['yolo']
-    
-    try:
-        from ultralytics import YOLO
-        
-        custom_model_path = os.path.join('models', 'yolo', 'signature_detector.pt')
-        
-        if os.path.exists(custom_model_path):
-            model = YOLO(custom_model_path)
-        else:
-            model = YOLO('yolov8n.pt')
-        
-        # Use CPU by default for on-demand GPU
-        device = 'cpu' if _GPU_ON_DEMAND else ('cuda' if torch.cuda.is_available() else 'cpu')
-        model.to(device)
-        
-        models['yolo'] = {
-            'model': model,
-            'device': device,
-            'original_device': device
-        }
-        return models['yolo']
-        
-    except Exception as e:
-        return None
-
-
-def load_yolo_layout_model():
-    """
-    Load YOLO document layout detection model.
-    
-    Fallback chain:
-      1. models/yolo/document_layout.pt  (custom-trained on DocLayNet 8-class)
-      2. None  (layout detection disabled — signature-only mode)
-    
-    The layout model detects 8 region classes:
-      text_block, table, figure, signature, stamp, handwriting_region, header, footer
-    """
-    global models
-
-    if models.get('yolo_layout') is not None:
-        return models['yolo_layout']
-
-    try:
-        from ultralytics import YOLO
-
-        layout_model_path = os.path.join('models', 'yolo', 'document_layout.pt')
-
-        if not os.path.exists(layout_model_path):
-            logger.info("Document layout YOLO model not found — layout detection disabled")
-            logger.info(f"  Expected: {os.path.abspath(layout_model_path)}")
-            logger.info("  Train with: python scripts/train_document_yolo.py")
-            return None
-
-        model = YOLO(layout_model_path)
-        device = 'cpu' if _GPU_ON_DEMAND else ('cuda' if torch.cuda.is_available() else 'cpu')
-        model.to(device)
-
-        models['yolo_layout'] = {
-            'model': model,
-            'device': device,
-            'original_device': device
-        }
-        logger.info(f"Document layout YOLO model loaded from {layout_model_path}")
-        return models['yolo_layout']
-
-    except Exception as e:
-        logger.warning(f"Failed to load document layout YOLO model: {e}")
         return None
 
 
@@ -589,12 +500,31 @@ def load_llama_model():
                         return result  # Already in correct format
                         
                 except requests.exceptions.Timeout:
+                    logging.getLogger('loader').warning(f"LLaMA request timed out after {timeout:.0f}s (max_tokens={max_tokens})")
                     try:
                         self.session.get(f"{self.base_url}/health", timeout=2)
                     except:
-                        pass
+                        logging.getLogger('loader').error("LLaMA health check failed after timeout — server may be crashed")
+                    # Retry once with reduced tokens
+                    try:
+                        retry_tokens = max(64, max_tokens // 2)
+                        payload['n_predict'] = retry_tokens
+                        logging.getLogger('loader').info(f"LLaMA retry with {retry_tokens} tokens...")
+                        response = self.session.post(
+                            f"{self.base_url}/completion",
+                            json=payload,
+                            timeout=timeout
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        if 'content' in result:
+                            return {'choices': [{'text': result['content']}]}
+                        return result
+                    except Exception as retry_err:
+                        logging.getLogger('loader').warning(f"LLaMA retry also failed: {retry_err}")
                     return {'choices': [{'text': ''}]}
                 except Exception as e:
+                    logging.getLogger('loader').error(f"LLaMA request failed: {e}")
                     return {'choices': [{'text': ''}]}
         
         models['llama'] = LlamafileWrapper(llamafile_url)

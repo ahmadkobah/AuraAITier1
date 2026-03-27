@@ -21,13 +21,41 @@ try:
     import colorama
     # Reinitialize colorama to handle closed streams gracefully
     colorama.deinit()
-    colorama.init(autoreset=True, wrap=False)
-except ImportError:
+    colorama.init(wrap=False)
+except (ImportError, ValueError):
     pass
 
 # Suppress PaddleX verbose logging at module load time
 logging.getLogger('paddlex').setLevel(logging.WARNING)
 logging.getLogger('paddleocr').setLevel(logging.WARNING)
+
+
+def _find_matching_brace(text: str, start: int) -> int:
+    """Find the position after the closing brace that matches the opening brace at `start`."""
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == '\\':
+            if in_string:
+                escape = True
+            continue
+        if ch == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return -1
 logging.getLogger('ppocr').setLevel(logging.WARNING)
 
 logger = logging.getLogger("table_extraction")
@@ -272,6 +300,7 @@ def extract_tables_from_image(image_path: str, use_llama_validation: bool = True
                 html_content = table_info['html']
                 if html_content:
                     table_data = parse_html_table(html_content)
+                    table_info['headers'] = table_data.get('headers', [])
                     table_info['rows'] = table_data['rows']
                     table_info['structure'] = {
                         'num_rows': table_data['num_rows'],
@@ -353,7 +382,7 @@ Respond ONLY with valid JSON."""
         from app.api.config_endpoints import get_runtime_config
         config = get_runtime_config()
         table_temp = config.get('TABLE_EXTRACTION_TEMPERATURE', 0.2)
-        table_tokens = config.get('TABLE_EXTRACTION_MAX_TOKENS', 1500)
+        table_tokens = config.get('TABLE_EXTRACTION_MAX_TOKENS', 3000)
         
         result = llama(
             prompt,
@@ -368,12 +397,20 @@ Respond ONLY with valid JSON."""
         
         if llama_output:
             
-            # Extract JSON
+            # Extract JSON with balanced brace matching
             json_start = llama_output.find('{')
-            json_end = llama_output.rfind('}') + 1
+            json_end = _find_matching_brace(llama_output, json_start) if json_start >= 0 else -1
             
             if json_start >= 0 and json_end > json_start:
-                validation = json.loads(llama_output[json_start:json_end])
+                json_block = llama_output[json_start:json_end]
+                try:
+                    validation = json.loads(json_block)
+                except json.JSONDecodeError:
+                    from json_repair import repair_json
+                    validation = repair_json(json_block, return_objects=True)
+                    if not isinstance(validation, dict):
+                        raise ValueError(f"json_repair returned {type(validation).__name__}, expected dict")
+                    logger.info("Table validation JSON repaired successfully")
                 
                 # Apply corrections if valid — verify row count matches before overwriting
                 if validation.get('is_valid') and validation.get('enhanced_rows'):
@@ -428,12 +465,14 @@ def parse_html_table(html: str) -> Dict[str, Any]:
         class TableParser(HTMLParser):
             def __init__(self):
                 super().__init__()
+                self.headers = []
                 self.rows = []
                 self.current_row = []
                 self.current_cell = ''
                 self.in_table = False
                 self.in_row = False
                 self.in_cell = False
+                self.row_has_th = False
             
             def handle_starttag(self, tag, attrs):
                 if tag == 'table':
@@ -441,9 +480,20 @@ def parse_html_table(html: str) -> Dict[str, Any]:
                 elif tag == 'tr':
                     self.in_row = True
                     self.current_row = []
+                    self.row_has_th = False
                 elif tag in ['td', 'th']:
                     self.in_cell = True
                     self.current_cell = ''
+                    if tag == 'th':
+                        self.row_has_th = True
+                    # Handle colspan: insert extra empty cells for spanned columns
+                    self._current_colspan = 1
+                    for attr_name, attr_val in attrs:
+                        if attr_name == 'colspan':
+                            try:
+                                self._current_colspan = max(1, int(attr_val))
+                            except (ValueError, TypeError):
+                                pass
             
             def handle_endtag(self, tag):
                 if tag == 'table':
@@ -451,10 +501,19 @@ def parse_html_table(html: str) -> Dict[str, Any]:
                 elif tag == 'tr':
                     self.in_row = False
                     if self.current_row:
-                        self.rows.append(self.current_row)
+                        if self.row_has_th and not self.headers:
+                            self.headers = self.current_row
+                        else:
+                            self.rows.append(self.current_row)
                 elif tag in ['td', 'th']:
                     self.in_cell = False
-                    self.current_row.append(self.current_cell.strip())
+                    cell_text = self.current_cell.strip()
+                    self.current_row.append(cell_text)
+                    # Add empty cells for colspan > 1
+                    colspan = getattr(self, '_current_colspan', 1)
+                    for _ in range(colspan - 1):
+                        self.current_row.append('')
+                    self._current_colspan = 1
             
             def handle_data(self, data):
                 if self.in_cell:
@@ -464,7 +523,10 @@ def parse_html_table(html: str) -> Dict[str, Any]:
         parser.feed(html)
         
         num_rows = len(parser.rows)
-        num_cols = max([len(row) for row in parser.rows]) if parser.rows else 0
+        num_cols = max(
+            [len(row) for row in parser.rows] +
+            ([len(parser.headers)] if parser.headers else [])
+        ) if (parser.rows or parser.headers) else 0
         
         # Normalize rows to have same number of columns
         normalized_rows = []
@@ -473,7 +535,14 @@ def parse_html_table(html: str) -> Dict[str, Any]:
                 row.append('')
             normalized_rows.append(row)
         
+        # Normalize headers
+        headers = parser.headers
+        if headers:
+            while len(headers) < num_cols:
+                headers.append('')
+        
         return {
+            'headers': headers,
             'rows': normalized_rows,
             'num_rows': num_rows,
             'num_cols': num_cols
@@ -482,6 +551,7 @@ def parse_html_table(html: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error parsing HTML table: {e}")
         return {
+            'headers': [],
             'rows': [],
             'num_rows': 0,
             'num_cols': 0
@@ -507,10 +577,23 @@ async def extract_tables_from_pdf_pages(rendered_pages: List[np.ndarray], use_ll
         
         page_tables = {}
         
+        # Read per-page timeout from Control Panel config (default 90s for first-time model load)
+        from app.api.config_endpoints import get_runtime_config
+        config = get_runtime_config()
+        per_page_timeout = config.get('TABLE_PER_PAGE_TIMEOUT', 90)
+        
         for page_num, page_img in enumerate(rendered_pages, start=1):
             try:
-                # Run PPStructure on page (handles V3 vs legacy API)
-                result = run_table_engine(engine, page_img)
+                # Run PPStructure on page with configurable per-page timeout
+                # First call may be slow due to model warm-up
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(run_table_engine, engine, page_img),
+                        timeout=float(per_page_timeout)
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"  PPStructure timed out on page {page_num} ({per_page_timeout}s), skipping")
+                    continue
                 
                 tables = []
                 for item in result:
@@ -531,11 +614,51 @@ async def extract_tables_from_pdf_pages(rendered_pages: List[np.ndarray], use_ll
                         html_content = table_info['html']
                         if html_content:
                             table_data = parse_html_table(html_content)
+                            table_info['headers'] = table_data.get('headers', [])
                             table_info['rows'] = table_data['rows']
                             table_info['structure'] = {
                                 'num_rows': table_data['num_rows'],
                                 'num_cols': table_data['num_cols']
                             }
+                        
+                        # Fix 6: Empty HTML fallback — crop bbox region and run PaddleOCR
+                        if not html_content and bbox and len(bbox) >= 4:
+                            logger.info(f"  📋 Table {len(tables)+1} has bbox but no HTML — running OCR on cropped region")
+                            try:
+                                x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+                                h, w = page_img.shape[:2]
+                                # Clamp to image bounds with small padding
+                                pad = 5
+                                x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
+                                x2, y2 = min(w, x2 + pad), min(h, y2 + pad)
+                                if x2 > x1 + 20 and y2 > y1 + 20:
+                                    cropped = page_img[y1:y2, x1:x2]
+                                    # Run PaddleOCR on cropped region
+                                    from app.models.loader import get_models
+                                    loaded_models = get_models()
+                                    paddleocr = loaded_models.get('paddleocr') if loaded_models else None
+                                    if paddleocr:
+                                        ocr_result = paddleocr.ocr(cropped, cls=True) if hasattr(paddleocr, 'ocr') else None
+                                        if ocr_result and ocr_result[0]:
+                                            ocr_data = ocr_result[0]
+                                            lines = []
+                                            if isinstance(ocr_data, dict) and 'rec_texts' in ocr_data:
+                                                lines = list(ocr_data['rec_texts'])
+                                            else:
+                                                for line in ocr_data:
+                                                    if line and isinstance(line, (list, tuple)) and len(line) >= 2:
+                                                        tp = line[1]
+                                                        if isinstance(tp, (list, tuple)) and len(tp) >= 1:
+                                                            lines.append(str(tp[0]))
+                                                        elif isinstance(tp, str):
+                                                            lines.append(tp)
+                                            if lines:
+                                                table_info['ocr_fallback_text'] = '\n'.join(lines)
+                                                table_info['rows'] = [[line] for line in lines]
+                                                table_info['structure'] = {'num_rows': len(lines), 'num_cols': 1}
+                                                logger.info(f"  ✓ OCR fallback extracted {len(lines)} lines from table region")
+                            except Exception as crop_err:
+                                logger.warning(f"  OCR fallback for empty table failed: {crop_err}")
                         
                         # Validate with LLaMA if enabled (run in thread to avoid blocking event loop)
                         if use_llama_validation and table_info['rows']:
@@ -591,7 +714,7 @@ async def extract_tables_from_text_with_llama(text: str, models: Dict) -> List[D
         from app.api.config_endpoints import get_runtime_config
         config = get_runtime_config()
         table_temp = config.get('TABLE_EXTRACTION_TEMPERATURE', 0.2)
-        table_tokens = config.get('TABLE_EXTRACTION_MAX_TOKENS', 1500)
+        table_tokens = config.get('TABLE_EXTRACTION_MAX_TOKENS', 3000)
         
         prompt = f"""You are a table extraction expert. Analyze the following text and identify any tables formatted with spaces or alignment.
 
@@ -626,7 +749,7 @@ CRITICAL RULES:
 }}
 
 TEXT TO ANALYZE:
-{text[:4000]}
+{text[:5000]}
 
 Respond ONLY with valid JSON. If no tables found, return {{"tables": []}}."""
 
@@ -646,15 +769,24 @@ Respond ONLY with valid JSON. If no tables found, return {{"tables": []}}."""
             logger.warning("LLaMA text table extraction returned empty")
             return []
         
-        # Extract JSON
+        # Extract JSON with balanced brace matching
         json_start = llama_output.find('{')
-        json_end = llama_output.rfind('}') + 1
+        json_end = _find_matching_brace(llama_output, json_start) if json_start >= 0 else -1
         
         if json_start < 0 or json_end <= json_start:
             logger.warning("No valid JSON in LLaMA table extraction response")
             return []
         
-        parsed = json.loads(llama_output[json_start:json_end])
+        json_block = llama_output[json_start:json_end]
+        try:
+            parsed = json.loads(json_block)
+        except json.JSONDecodeError:
+            from json_repair import repair_json
+            parsed = repair_json(json_block, return_objects=True)
+            if not isinstance(parsed, dict):
+                logger.warning("json_repair failed to produce valid dict for table extraction")
+                return []
+            logger.info("Table extraction JSON repaired successfully")
         extracted_tables = parsed.get('tables', [])
         
         if not extracted_tables:
@@ -668,10 +800,15 @@ Respond ONLY with valid JSON. If no tables found, return {{"tables": []}}."""
             if len(rows) < 2:  # Need at least header + 1 data row
                 continue
             
+            # Separate first row as headers, rest as data rows
+            headers = rows[0] if rows else []
+            data_rows = rows[1:] if len(rows) > 1 else []
+            
             formatted_table = {
-                'rows': rows,
-                'num_rows': len(rows),
-                'num_cols': len(rows[0]) if rows else 0,
+                'headers': headers,
+                'rows': data_rows,
+                'num_rows': len(data_rows),
+                'num_cols': len(headers) if headers else (len(rows[0]) if rows else 0),
                 'confidence': table.get('confidence', 0.8),
                 'table_type': table.get('table_type', 'other'),
                 'description': table.get('description', f'Text-formatted table {idx + 1}'),

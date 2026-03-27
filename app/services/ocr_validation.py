@@ -147,45 +147,10 @@ async def validate_ocr_quality(
             # Apply regex fixes first
             corrected_text, fixes_made = apply_regex_fixes(ocr_text)
             
-            # Try TrOCR fallback if page image is available
+            # TrOCR full-page fallback DISABLED — TrOCR is designed for single
+            # text lines only (signatures, handwriting). Feeding it a full page
+            # produces garbage. Region-level TrOCR is handled by region_router.
             trocr_used = False
-            if page_image is not None:
-                trocr = models.get('trocr')
-                if trocr:
-                    try:
-                        import torch
-                        from PIL import Image
-                        processor = trocr['processor']
-                        model = trocr['model']
-                        device = trocr.get('device', 'cpu')
-                        
-                        # Ensure PIL image
-                        if not isinstance(page_image, Image.Image):
-                            page_image = Image.fromarray(page_image).convert("RGB")
-                        else:
-                            page_image = page_image.convert("RGB")
-                        
-                        inputs = processor(images=page_image, return_tensors="pt")
-                        pixel_values = inputs["pixel_values"].to(device)
-                        
-                        with torch.no_grad():
-                            generated_ids = model.generate(
-                                pixel_values=pixel_values,
-                                max_new_tokens=256,
-                                num_beams=1,
-                                do_sample=False,
-                                early_stopping=True
-                            )
-                        trocr_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
-                        
-                        # Use TrOCR output if it produced meaningful text
-                        if trocr_text and len(trocr_text) > len(corrected_text) * 0.5:
-                            corrected_text = trocr_text
-                            fixes_made += 1
-                            trocr_used = True
-                            logger.info("✓ TrOCR fallback produced better text for REVIEW tier")
-                    except Exception as trocr_err:
-                        logger.warning(f"TrOCR fallback failed: {trocr_err}")
             
             # Attempt LLaMA correction (on TrOCR output or regex-corrected text)
             from app.models.loader import ensure_llama_loaded

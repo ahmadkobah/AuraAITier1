@@ -119,38 +119,32 @@ else:
     print("  No OCR results found")
 
 print("\n" + "=" * 60)
-print("STEP 5: Test Signature Detection with YOLO")
+print("STEP 5: Test Signature Detection (Text-based)")
 print("=" * 60)
 
-# Import signature detection
-from app.services.signature_detection import detect_signature_boxes, crop_signature_region
-from app.models.loader import get_models, load_all_models
+# Text-based signature detection uses regex patterns on OCR text
+# No YOLO model needed — signatures are found via text pattern matching
+print("\n  Signature detection is now text-based (regex on OCR output)")
+print("  No separate model loading required")
 
-# Load models
-print("\n  Loading AI models...")
-load_all_models()
-models = get_models()
-print(f"  Models loaded: {list(models.keys())}")
-
-# Convert numpy to PIL for signature detection
-pil_img = Image.fromarray(img_np)
-
-# Test YOLO-based detection
-print("\n  Testing YOLO-based signature detection:")
-try:
-    boxes = detect_signature_boxes(pil_img, models, return_images=True)
-    print(f"    Found {len(boxes)} signature boxes")
-    for i, box in enumerate(boxes):
-        print(f"    Box {i}:")
-        print(f"      Confidence: {box.get('confidence')}")
-        print(f"      Bbox: {box.get('box')}")
-        print(f"      Has image: {'Yes' if box.get('image') else 'No'}")
-        if box.get('image'):
-            print(f"      Image preview (first 100 chars): {box.get('image')[:100]}...")
-except Exception as e:
-    print(f"    Error: {e}")
-    import traceback
-    traceback.print_exc()
+if ocr_results:
+    import re
+    doc_text = "\n".join([line[1][0] for line in ocr_results if line[1]])
+    sig_patterns = [
+        r'(?:Authorized\s+)?Signature[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+        r'Signed\s*(?:by)?[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+    ]
+    found = False
+    for pattern in sig_patterns:
+        match = re.search(pattern, doc_text, re.IGNORECASE)
+        if match:
+            print(f"  ✓ Signature found: '{match.group(1).strip()}'")
+            found = True
+            break
+    if not found:
+        print("  No signature pattern found in OCR text")
+else:
+    print("  No OCR text available for signature detection")
 
 print("\n" + "=" * 60)
 print("DEBUG COMPLETE")

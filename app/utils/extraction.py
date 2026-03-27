@@ -12,6 +12,34 @@ from typing import Dict, Any, List, Optional
 logger = logging.getLogger("extraction")
 
 
+def _find_matching_brace(text: str, start: int) -> int:
+    """Find the position after the closing brace that matches the opening brace at `start`."""
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == '\\':
+            if in_string:
+                escape = True
+            continue
+        if ch == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return -1
+
+
 # Document type specific extraction schemas
 EXTRACTION_SCHEMAS = {
     'invoice': {
@@ -391,8 +419,9 @@ async def extract_structured_data(
         # Normalize document type
         doc_type_normalized = doc_type.lower().replace('_', ' ').strip()
 
-        # Get extraction schema for document type
-        schema = EXTRACTION_SCHEMAS.get(doc_type_normalized.split()[0], None)
+        # Get extraction schema for document type (try full match first, then first-word fallback)
+        schema_key = doc_type_normalized.replace(' ', '_')
+        schema = EXTRACTION_SCHEMAS.get(schema_key) or EXTRACTION_SCHEMAS.get(doc_type_normalized.split()[0], None)
 
         if not schema:
             logger.warning(f"No extraction schema for document type: {doc_type}")
@@ -420,7 +449,7 @@ async def extract_structured_data(
         # Prepare extraction prompt with clear field definitions
         fields_list = ', '.join(schema['fields'])  # Extract ALL fields, not just first 6
         
-        # Add specific instructions for invoice addresses
+        # Add specific instructions for invoice addresses and amount disambiguation
         address_instructions = ""
         if doc_type_normalized in ['invoice', 'receipt', 'purchase order']:
             address_instructions = """
@@ -429,12 +458,25 @@ IMPORTANT - Address Rules:
 - customer_address: The address of the person/company RECEIVING this document (the buyer)
 - Look for labels like "From:", "Sender:", "Issued by:" for vendor address
 - Look for labels like "Bill to:", "Ship to:", "Customer:", "Recipient:" for customer address
+
+IMPORTANT - Amount Rules:
+- subtotal: The sum of line items BEFORE tax (the smaller amount)
+- tax_amount: ONLY the tax/VAT amount
+- total_amount: The FINAL amount AFTER adding tax (the largest amount, what is owed)
+- Rule: subtotal + tax_amount = total_amount. If only two amounts exist, the larger one is total_amount.
 """
+        
+        # Smart text selection: send top + bottom of document
+        # Top captures headers, dates, invoice numbers; bottom captures banking, payment, totals
+        if len(text) > 4500:
+            doc_excerpt = text[:3000] + "\n...\n" + text[-1500:]
+        else:
+            doc_excerpt = text
         
         prompt = f"""Extract fields from this {doc_type_normalized}. You MUST return ONLY valid JSON. Do not add explanations, notes, or extra text.{address_instructions}
 
-Document Text (first 1500 chars):
-{text[:1500]}
+Document Text:
+{doc_excerpt}
 
 Required Fields: {fields_list}
 
@@ -453,7 +495,7 @@ Return JSON with extracted values:
         # Generate extraction with sufficient tokens for all fields (read from Control Panel)
         from app.api.config_endpoints import get_runtime_config
         config = get_runtime_config()
-        extraction_tokens = config.get('EXTRACTION_MAX_TOKENS', 600)
+        extraction_tokens = config.get('EXTRACTION_MAX_TOKENS', 1200)
         extraction_temp = config.get('EXTRACTION_TEMPERATURE', 0.1)
         response = await asyncio.to_thread(
             llama,
@@ -461,14 +503,29 @@ Return JSON with extracted values:
             max_tokens=extraction_tokens,
             temperature=extraction_temp,
             top_p=0.9,
-            stop=["}}\n\n", "}\n\nNote", "}\n\nThe", "Document", "Text", "\n\nExplanation"]
+            stop=["}\n\nNote", "}\n\nThe", "}\n\nExplanation", "}\n\nI "]
         )
 
         raw_output = response['choices'][0]['text'].strip()
+        # Prompt ended with opening '{' — prepend it to make complete JSON
+        if raw_output and not raw_output.lstrip().startswith('{'):
+            raw_output = '{' + raw_output
         logger.debug(f"Raw Llama output: {raw_output[:200]}")
 
         # Parse JSON response
         extracted_fields = parse_extraction_output(raw_output, schema['fields'])
+
+        if not extracted_fields:
+            logger.warning("Extraction parsing returned empty result — marking as failed")
+            return {
+                'success': False,
+                'error': 'Failed to parse extraction output',
+                'document_type': doc_type,
+                'extracted_fields': {},
+                'extraction_confidence': 0.0,
+                'fields_extracted': 0,
+                'fields_requested': len(schema['fields'])
+            }
 
         # Post-process and validate fields
         validated_fields = validate_extracted_fields(extracted_fields, doc_type_normalized)
@@ -526,11 +583,12 @@ def parse_extraction_output(raw_output: str, expected_fields: List[str]) -> Dict
         # Try standard JSON parsing on the extracted JSON block
         try:
             json_start = cleaned.find('{')
-            json_end = cleaned.rfind('}') + 1
-            if json_start >= 0 and json_end > json_start:
-                parsed = json.loads(cleaned[json_start:json_end])
-                logger.debug(f"Standard JSON parsed {len(parsed)} fields")
-                return parsed
+            if json_start >= 0:
+                json_end = _find_matching_brace(cleaned, json_start)
+                if json_end > json_start:
+                    parsed = json.loads(cleaned[json_start:json_end])
+                    logger.debug(f"Standard JSON parsed {len(parsed)} fields")
+                    return parsed
         except json.JSONDecodeError:
             pass
         
@@ -570,6 +628,11 @@ def parse_extraction_output(raw_output: str, expected_fields: List[str]) -> Dict
         logger.error(f"Error parsing extraction output: {e}", exc_info=True)
         return {}
 
+    # If we got here with an empty dict, all parsing methods failed
+    if not result:
+        logger.warning("All extraction parsing methods returned empty result")
+    return result
+
 
 def validate_extracted_fields(fields: Dict[str, Any], doc_type: str) -> Dict[str, Any]:
     """
@@ -594,6 +657,14 @@ def validate_extracted_fields(fields: Dict[str, Any], doc_type: str) -> Dict[str
         # Clean text fields
         else:
             validated[key] = str(value).strip()
+
+    # Fix 1: Subtotal/total swap detection — LLaMA 3B sometimes confuses these
+    sub = validated.get('subtotal')
+    total = validated.get('total_amount')
+    if sub is not None and total is not None and isinstance(sub, (int, float)) and isinstance(total, (int, float)):
+        if sub > total > 0:
+            logger.warning(f"Subtotal ({sub}) > total_amount ({total}) — swapping (LLaMA likely confused them)")
+            validated['subtotal'], validated['total_amount'] = total, sub
 
     return validated
 
@@ -791,44 +862,56 @@ async def extract_entities(text: str, models: Dict[str, Any]) -> Dict[str, List[
                 'phone_numbers': []
             }
 
-        prompt = f"""Extract all named entities from this document. Return a JSON object with lists of entities.
+        prompt = f"""Extract every named entity from this document text. List ALL companies, people, dates, money amounts, and addresses you find. Do not leave any field empty if the information exists in the text.
 
 Document text:
-{text[:1500]}
+{text[:3000]}
 
-Return JSON format:
+Extract into this exact JSON format (fill every field):
 {{
-  "companies": ["Company A", "Company B"],
-  "people": ["John Smith", "Jane Doe"],
-  "dates": ["2025-11-17", "2025-12-17"],
-  "amounts": [1000.00, 2500.50],
-  "addresses": ["123 Main St, New York, NY"],
-  "emails": ["email@example.com"],
-  "phone_numbers": ["555-1234"]
+  "companies": ["every company or organization name"],
+  "people": ["every person name mentioned"],
+  "dates": ["every date found, in YYYY-MM-DD format"],
+  "amounts": ["every money amount as a number"],
+  "addresses": ["every physical address"],
+  "emails": ["every email address"],
+  "phone_numbers": ["every phone number"]
 }}
 
-JSON:"""
+JSON:
+{{"""
 
         # Read entity extraction settings from Control Panel
         from app.api.config_endpoints import get_runtime_config
         config = get_runtime_config()
-        entity_tokens = config.get('ENTITY_EXTRACTION_MAX_TOKENS', 400)
+        entity_tokens = config.get('ENTITY_EXTRACTION_MAX_TOKENS', 800)
         entity_temp = config.get('ENTITY_EXTRACTION_TEMPERATURE', 0.1)
         response = await asyncio.to_thread(
             llama,
             prompt,
             max_tokens=entity_tokens,
             temperature=entity_temp,
-            top_p=0.9
+            top_p=0.9,
+            stop=["}\n\n", "}\n\nNote", "}\n\nThe", "}\n\nExplanation"]
         )
 
         raw_output = response['choices'][0]['text'].strip()
+        logger.info(f"Entity extraction raw output ({len(raw_output)} chars): {raw_output[:500]}")
+
+        # Prompt ended with "{" — prepend it since LLaMA continues after the brace
+        raw_output = '{' + raw_output
+        
+        # Ensure the JSON object is closed (stop sequence consumes the closing brace)
+        if raw_output and not raw_output.rstrip().endswith('}'):
+            raw_output = raw_output.rstrip() + '}'
 
         # Parse entities
         entities = parse_extraction_output(raw_output, [
             'companies', 'people', 'dates', 'amounts',
             'addresses', 'emails', 'phone_numbers'
         ])
+        
+        logger.info(f"Entity extraction parsed {len(entities)} keys: {list(entities.keys())}")
 
         # Ensure all keys exist with empty lists
         default_entities = {

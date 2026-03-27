@@ -202,12 +202,18 @@ async def run_full_ai_pipeline(
                 }}
             )
             logger.debug(f"Checkpoint: {step_name}")
-        except Exception:
-            pass  # Non-critical — don't let checkpoint failures kill the pipeline
+        except Exception as e:
+            logger.warning(f"⚠️ Checkpoint failed at step '{step_name}': {e}")
     
     try:
         db = db_connection
         documents_collection = db['documents']
+        
+        # Fix: root logger level gets set to WARNING by uvicorn/library imports
+        # Restore to INFO so pipeline_worker, extraction, etc. loggers work
+        root_logger = logging.getLogger()
+        if root_logger.level > logging.INFO:
+            root_logger.setLevel(logging.INFO)
         
         logger.info(f"PIPELINE START: doc_id={doc_id}, pdf_file_path={pdf_file_path}")
         
@@ -260,7 +266,6 @@ async def run_full_ai_pipeline(
             split_pdf_and_find_breaks,
             classify_text
         )
-        from app.services.signature_ocr import ocr_signature
         
         if ENABLE_PDF_SPLITTING:
             # Read similarity threshold from Control Panel config
@@ -272,6 +277,42 @@ async def run_full_ai_pipeline(
                 similarity_threshold=similarity_threshold
             )
             logger.info(f"✓ Split into {len(logical_documents)} logical documents")
+            
+            # Don't split small PDFs (≤3 pages) — merge back into one logical document
+            # Multi-page invoices/letters are typically 1-3 pages and should stay as one doc
+            total_pages = max((d['end_page'] for d in logical_documents), default=0) + 1
+            if total_pages <= 3 and len(logical_documents) > 1:
+                logger.info(f"  PDF has {total_pages} pages (≤3) with {len(logical_documents)} splits — merging into single document")
+                merged_text = "\n\n".join(d['text'] for d in logical_documents)
+                first_doc = logical_documents[0]
+                last_doc = logical_documents[-1]
+                # Merge page images from all logical docs
+                merged_pages = []
+                merged_pil = []
+                for d in logical_documents:
+                    merged_pages.extend(d.get('pages', []))
+                    merged_pil.extend(d.get('page_images_pil', []))
+                # Re-embed the merged text
+                search_model = models.get('sentence_transformer_search')
+                merged_embedding = (search_model.encode(merged_text, convert_to_tensor=False).tolist()
+                                    if search_model and merged_text.strip() else [])
+                # Aggregate OCR confidence
+                all_confs = [d.get('ocr_confidence', {}) for d in logical_documents]
+                avg_conf = sum(c.get('avg_confidence', 0.5) for c in all_confs) / len(all_confs) if all_confs else 0.5
+                min_conf = min((c.get('min_confidence', 0.5) for c in all_confs), default=0.5)
+                logical_documents = [{
+                    'doc_num': 0,
+                    'start_page': first_doc['start_page'],
+                    'end_page': last_doc['end_page'],
+                    'text': merged_text,
+                    'page_count': total_pages,
+                    'embedding': merged_embedding,
+                    'confidence': first_doc.get('confidence', 0.85),
+                    'pages': merged_pages,
+                    'page_images_pil': merged_pil,
+                    'ocr_confidence': {'avg_confidence': avg_conf, 'min_confidence': min_conf}
+                }]
+                logger.info(f"  ✓ Merged into 1 logical document ({total_pages} pages, {len(merged_text)} chars)")
         else:
             # Treat entire PDF as single document
             logger.info("⏸️ PDF splitting disabled - treating as single document")
@@ -417,48 +458,37 @@ async def run_full_ai_pipeline(
                 logger.warning(f"  Logical document {idx + 1} has no text, skipping")
                 continue
 
-            # 2a. Validate OCR Quality with Llama (optional, with timeout)
+            # 2a. Smart OCR Validation — routes by PaddleOCR confidence
+            # SKIP (≥95%): no validation | LIGHT (75-94%): regex fixes | FULL (50-74%): LLaMA | REVIEW (<50%): TrOCR+LLaMA
             ocr_validation = {'quality_score': 0.9, 'corrections_made': 0, 'issues_found': [], 'routing_tier': 'skipped'}
-            if ENABLE_OCR_VALIDATION:
-                logger.info("  Validating OCR quality...")
+            ocr_confidence = logical_doc.get('ocr_confidence', None)
+            if ENABLE_OCR_VALIDATION and ocr_confidence:
+                logger.info(f"  Validating OCR quality (avg={ocr_confidence.get('avg_confidence', 0):.0%}, min={ocr_confidence.get('min_confidence', 0):.0%})...")
                 from app.services.ocr_validation import validate_ocr_quality
-                
-                # Get timeout from config
                 ocr_timeout = config.get('OCR_VALIDATION_TIMEOUT', 30)
-                
-                # Get OCR confidence from logical_doc for smart routing
-                ocr_confidence = logical_doc.get('ocr_confidence', None)
-                if ocr_confidence:
-                    logger.info(f"  OCR confidence: avg={ocr_confidence.get('avg_confidence', 0):.0%}, min={ocr_confidence.get('min_confidence', 0):.0%}")
-                
-                # Pass page image for REVIEW tier TrOCR fallback (Bug #12)
-                start_pg = logical_doc.get('start_page', 0)
-                page_img = images[start_pg] if images and start_pg < len(images) else None
-
                 try:
+                    page_img = None
+                    if images:
+                        start_p = logical_doc.get('start_page', 0)
+                        if start_p < len(images):
+                            page_img = images[start_p]
                     ocr_validation = await asyncio.wait_for(
                         validate_ocr_quality(doc_text, models, ocr_confidence, page_image=page_img),
                         timeout=float(ocr_timeout)
                     )
-                    
-                    # Log routing tier
                     routing_tier = ocr_validation.get('routing_tier', 'unknown')
-                    logger.info(f"  OCR validation tier: {routing_tier}")
-                    
+                    logger.info(f"  OCR validation tier: {routing_tier}, corrections: {ocr_validation.get('corrections_made', 0)}")
+                    # Use corrected text if quality improved
+                    if ocr_validation.get('corrections_made', 0) > 0 and ocr_validation.get('corrected_text'):
+                        doc_text = ocr_validation['corrected_text']
+                        logger.info(f"  ✓ Applied {ocr_validation['corrections_made']} OCR corrections")
                 except asyncio.TimeoutError:
                     logger.warning(f"  OCR validation timed out after {ocr_timeout}s, using default")
                     ocr_validation = {'quality_score': 0.5, 'corrections_made': 0, 'issues_found': ['Validation timeout'], 'routing_tier': 'timeout'}
-
-                # Use corrected text if quality improved
-                if ocr_validation.get('corrections_made', 0) > 0:
-                    logger.info(f"  ✓ OCR corrected: {ocr_validation['corrections_made']} corrections")
-                    doc_text = ocr_validation.get('corrected_text', doc_text)
-                    # Re-generate embedding for corrected text
-                    search_model = models.get('sentence_transformer_search')
-                    if search_model is not None:
-                        doc_embedding = search_model.encode(doc_text, convert_to_tensor=False).tolist()
-                    else:
-                        logger.warning("  Search model not available, keeping original embedding")
+            elif not ENABLE_OCR_VALIDATION:
+                logger.info("  ⏭️ OCR validation disabled")
+            else:
+                logger.info("  ⏭️ OCR validation skipped (no confidence data)")
 
             # 2b. Classify with Llama Reasoning (optional based on config)
             if ENABLE_CLASSIFICATION:
@@ -498,36 +528,7 @@ async def run_full_ai_pipeline(
                     logger.warning(f"  ⚠️ GPU memory high ({gpu_mem:.1f} MB), clearing cache")
                     torch.cuda.empty_cache()
             
-            # 2b-layout. Full document layout detection with YOLO (if trained model available)
-            # Detects 8 classes: text_block, table, figure, signature, stamp, handwriting, header, footer
-            # Routes each region to the best OCR engine via region_router
-            layout_results = {}
-            layout_available = models.get('yolo_layout') is not None
-            
-            if layout_available:
-                logger.info("  Running document layout detection...")
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                
-                try:
-                    from app.services.layout_detection import detect_layout_batch
-                    start_page = logical_doc['start_page']
-                    end_page = logical_doc['end_page']
-                    max_pages_layout = min(end_page + 1, len(images), start_page + 10)
-                    page_images_for_layout = [images[p] for p in range(start_page, max_pages_layout)]
-                    
-                    layout_results = detect_layout_batch(page_images_for_layout, models)
-                    
-                    total_regions = sum(len(v) for v in layout_results.values())
-                    logger.info(f"  Layout detection: {total_regions} regions across {len(layout_results)} pages")
-                    
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                except Exception as e:
-                    logger.warning(f"  Layout detection failed, falling back to signature-only: {e}")
-                    layout_results = {}
-            
-            # 2c. Detect signatures with YOLOv8n, then OCR with TrOCR Large on cropped region (optional)
+            # 2b. Detect signatures via text pattern matching in OCR output
             signature_found = False
             signature_text = ""
             signature_box = None
@@ -535,107 +536,31 @@ async def run_full_ai_pipeline(
             signature_confidence = 0.0
             sig_validation = None
 
-            # If layout detection found signatures, extract them directly
-            if layout_available and layout_results:
-                for page_offset, regions in layout_results.items():
-                    if signature_found:
-                        break
-                    for region in regions:
-                        if region.get('class') == 'signature' and region.get('text', '').strip():
-                            text = region['text'].strip()
-                            if (len(text) >= 2 and
-                                not text.replace('.', '').replace(',', '').isdigit()):
-                                signature_found = True
-                                signature_text = text
-                                signature_box = region.get('box')
-                                signature_confidence = float(region.get('confidence', 0.7))
-                                logger.info(f"  ✓ Signature from layout detection: '{signature_text}'")
-                                break
-
-            # Clear GPU cache before signature detection to prevent OOM
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            if ENABLE_SIGNATURE_DETECTION and not signature_found:
+            if ENABLE_SIGNATURE_DETECTION and doc_text:
                 logger.info("  Detecting signatures...")
-                from app.services.signature_detection import detect_signatures_batch
-                start_page = logical_doc['start_page']
-                end_page = logical_doc['end_page']
+                import re
+                # Common signature indicators in OCR text
+                sig_patterns = [
+                    r'(?:Authorized\s+)?Signature[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+                    r'Signed\s*(?:by)?[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+                    r'Name[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)(?:\s+Terms|\s+Payment|\s*$)',
+                    r'(?:Invoice\s+)?Total\s+([A-Z][a-z]+(?:\s+[A-Z]?[a-z]+)*)\s+Terms',
+                ]
                 
-                # Process max 5 pages to prevent memory overflow
-                max_pages_sig = min(end_page + 1, len(images), start_page + 5)
-                page_images_for_sig = [images[p] for p in range(start_page, max_pages_sig)]
-                
-                # Batch YOLO: single GPU session for all pages
-                batch_results = detect_signatures_batch(page_images_for_sig, models, return_images=False)
-                
-                # Run TrOCR only on pages where YOLO found detections
-                for page_offset, yolo_results in batch_results.items():
-                    if signature_found:
-                        break
-                    p = start_page + page_offset
-                    img = images[p]
-                    
-                    yolo_boxes = [r['box'] for r in yolo_results]
-                    
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                        tmp_path = tmp.name
-                    
-                    try:
-                        img.save(tmp_path)
-                        sig_result = ocr_signature(tmp_path, models, boxes=yolo_boxes)
-                        
-                        extracted_text = sig_result.get('text', '').strip()
-                        if sig_result.get('found') and extracted_text:
-                            if (len(extracted_text) >= 2 and
-                                not extracted_text.replace('.', '').replace(',', '').isdigit() and
-                                extracted_text.lower() not in ['total', 'price', 'invoice', 'order', 'date', 'customer', 'address']):
-                                signature_found = True
-                                signature_text = extracted_text
-                                signature_box = sig_result.get('box')
-                                signature_boxes = sig_result.get('boxes', [])
-                                signature_confidence = float(sig_result.get('confidence', 0.75))
-                                logger.info(f"  ✓ Signature candidate found on page {p+1}: '{signature_text}'")
-                            else:
-                                logger.debug(f"  ✗ False positive filtered on page {p+1}: '{extracted_text}'")
-                    finally:
-                        try:
-                            if os.path.exists(tmp_path):
-                                os.remove(tmp_path)
-                        except Exception as e:
-                            logger.warning(f"Failed to cleanup temp file {tmp_path}: {e}")
-                
-                # Fallback: Text-based signature detection if YOLO didn't find anything
-                if not signature_found and doc_text:
-                    # Look for signature-related patterns in OCR text
-                    import re
-                    # Common signature indicators
-                    sig_patterns = [
-                        r'(?:Authorized\s+)?Signature[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
-                        r'Signed\s*(?:by)?[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
-                        r'Name[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)(?:\s+Terms|\s+Payment|\s*$)',
-                        r'(?:Invoice\s+)?Total\s+([A-Z][a-z]+(?:\s+[A-Z]?[a-z]+)*)\s+Terms',  # "Total John Smith Terms"
-                    ]
-                    
-                    for pattern in sig_patterns:
-                        match = re.search(pattern, doc_text, re.IGNORECASE)
-                        if match:
-                            potential_sig = match.group(1).strip()
-                            # Validate it looks like a name (2-4 words, proper case)
-                            words = potential_sig.split()
-                            if 2 <= len(words) <= 4 and all(w[0].isupper() for w in words if w):
-                                signature_found = True
-                                signature_text = potential_sig
-                                signature_confidence = 0.6  # Lower confidence for text-based
-                                logger.info(f"  ✓ Text-based signature found: '{signature_text}'")
-                                break
-                
-                # Clear GPU after signature detection
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    logger.debug("GPU cache cleared after signature detection")
+                for pattern in sig_patterns:
+                    match = re.search(pattern, doc_text, re.IGNORECASE)
+                    if match:
+                        potential_sig = match.group(1).strip()
+                        # Validate it looks like a name (2-4 words, proper case)
+                        words = potential_sig.split()
+                        if 2 <= len(words) <= 4 and all(w[0].isupper() for w in words if w):
+                            signature_found = True
+                            signature_text = potential_sig
+                            signature_confidence = 0.6
+                            logger.info(f"  ✓ Text-based signature found: '{signature_text}'")
+                            break
             
-                # 2d. Validate signature with Llama (if found and enabled, with timeout)
+                # 2c. Validate signature with Llama (if found and enabled, with timeout)
                 if ENABLE_SIGNATURE_VALIDATION and signature_found and signature_text:
                     logger.info("  Validating signature...")
                     from app.services.signature_validation import validate_signature_text
@@ -657,155 +582,216 @@ async def run_full_ai_pipeline(
                 elif signature_found and not ENABLE_SIGNATURE_VALIDATION:
                     logger.info("  ⏸️ Signature validation disabled - skipping")
 
-            # Collect ALL layout region data + merge handwriting text (Bug #8 + #23)
-            layout_enriched = []
-            layout_text_parts = []
-            if layout_available and layout_results:
-                for page_offset, regions in layout_results.items():
-                    for region in regions:
-                        layout_enriched.append({
-                            'page': page_offset,
-                            'class': region.get('class'),
-                            'confidence': region.get('confidence', 0.0),
-                            'box': region.get('box'),
-                            'engine': region.get('engine', ''),
-                            'text': region.get('text', '')
-                        })
-                        # Merge handwriting text into doc_text for extraction + search
-                        if region.get('class') == 'handwriting_region' and region.get('text', '').strip():
-                            layout_text_parts.append(region['text'].strip())
-                if layout_text_parts:
-                    doc_text += "\n\n[Handwritten Content]\n" + "\n".join(layout_text_parts)
-                    logger.info(f"  ✓ Merged {len(layout_text_parts)} handwriting regions into doc_text")
+            # 2d/2e/2f. Run independent LLaMA steps IN PARALLEL
+            # Structured extraction, entity extraction, table extraction, and summary
+            # all only need doc_text — no dependencies between them.
+            from app.utils.extraction import extract_structured_data, extract_entities
 
-            # 2e. Extract structured data based on document type (optional, with timeout)
-            structured_extraction = {'success': False, 'extracted_fields': {}}
-            if ENABLE_STRUCTURED_EXTRACTION:
+            async def _do_structured_extraction():
+                if not ENABLE_STRUCTURED_EXTRACTION:
+                    return {'success': False, 'extracted_fields': {}}
                 logger.info("  Extracting structured data...")
-                from app.utils.extraction import extract_structured_data
                 doc_type = classification.get('label', 'unknown')
                 try:
-                    structured_extraction = await asyncio.wait_for(
+                    return await asyncio.wait_for(
                         extract_structured_data(doc_text, doc_type, models),
                         timeout=60.0
                     )
                 except asyncio.TimeoutError:
                     logger.warning("  Structured data extraction timed out after 60s")
-                    structured_extraction = {'success': False, 'extracted_fields': {}, 'error': 'timeout'}
+                    return {'success': False, 'extracted_fields': {}, 'error': 'timeout'}
 
-            # 2f. Extract entities (optional, with timeout)
-            entities = {'companies': [], 'people': [], 'dates': [], 'amounts': [], 'addresses': [], 'emails': [], 'phone_numbers': []}
-            if ENABLE_ENTITY_EXTRACTION:
+            async def _do_entity_extraction():
+                if not ENABLE_ENTITY_EXTRACTION:
+                    return {'companies': [], 'people': [], 'dates': [], 'amounts': [], 'addresses': [], 'emails': [], 'phone_numbers': []}
                 logger.info("  Extracting entities...")
-                from app.utils.extraction import extract_entities
                 try:
-                    entities = await asyncio.wait_for(
+                    return await asyncio.wait_for(
                         extract_entities(doc_text, models),
                         timeout=45.0
                     )
                 except asyncio.TimeoutError:
                     logger.warning("  Entity extraction timed out after 45s")
-                    entities = {'companies': [], 'people': [], 'dates': [], 'amounts': [], 'addresses': [], 'emails': [], 'phone_numbers': [], 'error': 'timeout'}
+                    return {'companies': [], 'people': [], 'dates': [], 'amounts': [], 'addresses': [], 'emails': [], 'phone_numbers': [], 'error': 'timeout'}
 
-            # 2f-2. Extract tables from pages (optional, with timeout)
-            tables = []
-            ENABLE_TABLE_EXTRACTION = config.get('ENABLE_TABLE_EXTRACTION', True)
-            if ENABLE_TABLE_EXTRACTION:
-                from app.services.table_extraction import extract_tables_from_pdf_pages, extract_tables_from_text_with_llama
-                import numpy as np
-                
-                # Get page images for this logical document
-                start_page = logical_doc.get('start_page', 0)
-                end_page = logical_doc.get('end_page', 0)
-                
-                logger.info(f"  📊 Table extraction: start_page={start_page}, end_page={end_page}, images available={len(images)}")
-                
-                # Extract page images as numpy arrays for table extraction
-                page_images = []
-                for p in range(start_page, min(end_page + 1, len(images))):
-                    img = images[p]
-                    # Convert PIL Image to numpy array if needed
-                    if hasattr(img, 'convert'):
-                        np_img = np.array(img.convert('RGB'))
-                        page_images.append(np_img)
-                        logger.info(f"    Page {p+1}: converted PIL to numpy {np_img.shape}")
-                    else:
-                        page_images.append(np.array(img))
-                        logger.info(f"    Page {p+1}: already numpy {np.array(img).shape}")
-                
-                logger.info(f"  📊 Prepared {len(page_images)} page images for table extraction")
-                
-                # Try visual table extraction if page images available
-                if page_images:
-                    logger.info(f"  Extracting tables from {len(page_images)} pages (pages {start_page+1}-{end_page+1})...")
-                    try:
-                        page_tables = await asyncio.wait_for(
-                            extract_tables_from_pdf_pages(page_images),
-                            timeout=90.0
-                        )
-                        logger.info(f"  📊 extract_tables_from_pdf_pages returned: {len(page_tables)} pages with tables")
-                        for pn, pt_list in page_tables.items():
-                            logger.info(f"    Page {pn}: {len(pt_list)} tables")
-                            for ti, t in enumerate(pt_list):
-                                logger.info(f"      Table {ti}: html={len(t.get('html',''))} chars, rows={len(t.get('rows',[]))}")
-                    except asyncio.TimeoutError:
-                        logger.warning("  Table extraction timed out after 90s")
-                        page_tables = {}
-                    
-                    # Flatten page tables with page numbers
-                    for page_num, page_table_list in page_tables.items():
-                        for table in page_table_list:
-                            table['page'] = page_num
-                            tables.append(table)
-                    
-                    if tables:
-                        logger.info(f"  ✓ Extracted {len(tables)} visual tables from document")
-                
-                # Fallback or additional: Try text-based table extraction with LLaMA
-                if not tables and doc_text:
-                    logger.info("  No visual tables found, attempting text-based table extraction with LLaMA...")
-                    try:
-                        text_tables = await asyncio.wait_for(
-                            extract_tables_from_text_with_llama(doc_text, models),
-                            timeout=30.0
-                        )
-                        if text_tables:
-                            tables = text_tables
-                            logger.info(f"  ✓ Extracted {len(tables)} text-formatted tables with LLaMA")
-                    except asyncio.TimeoutError:
-                        logger.warning("  Text-based table extraction timed out after 30s")
-                    except Exception as e:
-                        logger.warning(f"  Text-based table extraction failed: {e}")
-            else:
-                logger.info("  ⏸️ Table extraction disabled")
+            async def _do_table_extraction():
+                # PPStructure removed — Line Items (OCR + frontend parser) is more accurate
+                logger.info("  ⏸️ Table extraction (PPStructure) removed — using Line Items instead")
+                return []
 
-            # 2g. Generate summary using Llama (optional based on config, with health check and timeout)
-            summary = ""
-            if ENABLE_SUMMARY:
+            async def _do_summary():
+                if not ENABLE_SUMMARY:
+                    logger.info("  ⏸️ Summary generation disabled")
+                    return ""
                 logger.info("  Generating summary...")
                 if is_llamafile_healthy():
                     try:
-                        summary = await asyncio.wait_for(
+                        _summary = await asyncio.wait_for(
                             generate_summary(doc_text, models),
                             timeout=60.0
                         )
-                        # Re-check Llamafile health after generation (detect crash during call)
                         if not is_llamafile_healthy():
                             logger.warning("  Llamafile crashed during generation, using fallback")
-                            summary = doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
+                            return doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
+                        return _summary
                     except asyncio.TimeoutError:
                         logger.warning("  Summary generation timed out after 60s, using fallback")
-                        summary = doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
+                        return doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
                     except (ValueError, RuntimeError, ConnectionError) as e:
                         logger.warning(f"  Summary generation failed: {e}, rechecking Llamafile...")
                         if not is_llamafile_healthy():
                             logger.error("  Llamafile crashed or disconnected")
-                        summary = doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
+                        return doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
                 else:
                     logger.warning("  Llamafile not healthy, using text fallback for summary")
-                    summary = doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
-            else:
-                logger.info("  ⏸️ Summary generation disabled")
+                    return doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
+
+            # Run all 4 independent steps in parallel
+            logger.info("  ⚡ Running extraction + summary steps in parallel...")
+            structured_extraction, entities, tables, summary = await asyncio.gather(
+                _do_structured_extraction(),
+                _do_entity_extraction(),
+                _do_table_extraction(),
+                _do_summary(),
+            )
+
+            # Enrich entities from structured data extraction
+            # LLaMA 3B entity extraction is unreliable — structured extraction is much more accurate
+            # Strategy: start fresh from structured data, then add unique LLaMA items that pass filters
+            if structured_extraction.get('success') and structured_extraction.get('extracted_fields'):
+                fields = structured_extraction['extracted_fields']
+                llama_entities = entities if isinstance(entities, dict) else {}
+                entities = {'companies': [], 'people': [], 'dates': [], 'amounts': [], 'addresses': [], 'emails': [], 'phone_numbers': []}
+
+                def _add_unique(key, value):
+                    if value and str(value).strip() and str(value).lower() not in ('null', 'none', 'n/a', 'not found', ''):
+                        val_str = str(value).strip()
+                        existing = [str(v).strip().lower() for v in entities.get(key, [])]
+                        if val_str.lower() not in existing:
+                            entities[key].append(val_str)
+
+                # 1) Populate from structured data (high reliability)
+                for f in ('vendor_name', 'company_name', 'merchant_name',
+                          'sender_company', 'recipient_company', 'party_a', 'party_b',
+                          'bank_name', 'employer_name', 'issuing_authority'):
+                    _add_unique('companies', fields.get(f))
+
+                for f in ('sender', 'recipient', 'customer_name', 'employee_name', 'account_name',
+                          'proposer', 'insured_name'):
+                    _add_unique('people', fields.get(f))
+
+                for f in ('invoice_date', 'due_date', 'date', 'contract_date', 'effective_date',
+                          'expiration_date', 'issue_date', 'start_date', 'end_date',
+                          'delivery_date', 'payment_date'):
+                    _add_unique('dates', fields.get(f))
+
+                for f in ('total_amount', 'subtotal', 'tax_amount', 'amount',
+                          'contract_value', 'premium_amount', 'net_salary', 'gross_salary'):
+                    val = fields.get(f)
+                    if val is not None:
+                        _add_unique('amounts', val)
+
+                for f in ('vendor_address', 'customer_address', 'merchant_address',
+                          'delivery_address', 'address'):
+                    _add_unique('addresses', fields.get(f))
+
+                # 2) Add LLaMA entities only if they look valid and aren't duplicates
+                # Known people/companies from structured data (for cross-check)
+                known_names = set()
+                for v in entities['companies'] + entities['people']:
+                    known_names.add(v.lower())
+
+                # 2) Add LLaMA entities ONLY when structured extraction has low confidence
+                # High-confidence structured data is the single source of truth
+                extraction_conf = structured_extraction.get('extraction_confidence', 0.0)
+                if extraction_conf < 0.5:
+                    logger.info(f"  Structured confidence {extraction_conf:.0%} < 50% — merging LLaMA entities")
+                    for comp in llama_entities.get('companies', []):
+                        c = str(comp).strip()
+                        if len(c) > 2 and not c.replace('.', '').replace(',', '').replace(' ', '').isdigit():
+                            _add_unique('companies', c)
+                    for person in llama_entities.get('people', []):
+                        _add_unique('people', person)
+                    for date in llama_entities.get('dates', []):
+                        _add_unique('dates', date)
+                    structured_amt_strs = [str(v).strip() for v in entities.get('amounts', [])]
+                    for amt in llama_entities.get('amounts', []):
+                        amt_s = str(amt).strip()
+                        try:
+                            amt_val = float(amt_s.replace(',', ''))
+                            if amt_val < 10:
+                                continue
+                            if any(amt_s in sa and amt_s != sa for sa in structured_amt_strs):
+                                continue
+                        except (ValueError, TypeError):
+                            pass
+                        _add_unique('amounts', amt)
+                    for addr in llama_entities.get('addresses', []):
+                        a = str(addr).strip()
+                        if len(a) > 5:
+                            _add_unique('addresses', a)
+                else:
+                    logger.info(f"  Structured confidence {extraction_conf:.0%} ≥ 50% — skipping LLaMA entities (structured data is source of truth)")
+
+                # 3) Regex extraction for emails & phones (LLaMA misses these)
+                import re as _re
+                for email_match in _re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', doc_text[:5000]):
+                    _add_unique('emails', email_match)
+                for phone_match in _re.findall(r'(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3,4}[-.\s]?\d{4}', doc_text[:5000]):
+                    _add_unique('phone_numbers', phone_match)
+
+                # 4) Cross-clean: remove people names from companies list
+                people_lower = {str(p).strip().lower() for p in entities.get('people', [])}
+                entities['companies'] = [c for c in entities['companies'] if str(c).strip().lower() not in people_lower]
+
+                # 5) Address deduplication: remove fragments that are substrings of longer addresses
+                addrs = entities.get('addresses', [])
+                if len(addrs) > 1:
+                    deduped = []
+                    for addr in addrs:
+                        # Keep only if no other address contains this one as a substring
+                        if not any(addr.lower() in other.lower() and addr.lower() != other.lower() for other in addrs):
+                            deduped.append(addr)
+                    if len(deduped) < len(addrs):
+                        logger.info(f"  Deduplicated addresses: {len(addrs)} → {len(deduped)}")
+                    entities['addresses'] = deduped
+
+                enriched_count = sum(len(v) for v in entities.values())
+                if enriched_count > 0:
+                    logger.info(f"  ✓ Enriched entities from structured data: {enriched_count} total")
+
+            # Build template summary from extracted fields (zero hallucination)
+            # Replaces LLaMA summary when structured data is available
+            if structured_extraction.get('success') and structured_extraction.get('extracted_fields'):
+                fields = structured_extraction['extracted_fields']
+                doc_label = classification.get('label', 'Document')
+                parts = []
+                # Build from extracted fields
+                if fields.get('vendor_name') or fields.get('sender') or fields.get('company_name'):
+                    who = fields.get('vendor_name') or fields.get('sender') or fields.get('company_name') or fields.get('proposer', '')
+                    parts.append(f"{doc_label} from {who}")
+                else:
+                    parts.append(doc_label)
+                if fields.get('customer_name') or fields.get('recipient') or fields.get('employee_name'):
+                    to_whom = fields.get('customer_name') or fields.get('recipient') or fields.get('employee_name', '')
+                    parts.append(f"to {to_whom}")
+                if fields.get('total_amount') or fields.get('amount') or fields.get('contract_value'):
+                    amt = fields.get('total_amount') or fields.get('amount') or fields.get('contract_value', '')
+                    currency = fields.get('currency', '')
+                    parts.append(f"for {currency} {amt}".strip() if currency else f"for {amt}")
+                date_val = fields.get('invoice_date') or fields.get('date') or fields.get('contract_date', '')
+                if date_val:
+                    parts.append(f"dated {date_val}")
+                due = fields.get('due_date') or fields.get('expiration_date', '')
+                if due:
+                    parts.append(f"due {due}")
+                ref = fields.get('invoice_number') or fields.get('contract_number') or fields.get('receipt_number') or fields.get('po_number', '')
+                if ref:
+                    parts.append(f"(Ref: {ref})")
+                template_summary = ", ".join(parts) + "."
+                if len(template_summary) > 20:  # Only use if meaningful
+                    summary = template_summary
+                    logger.info(f"  ✓ Built template summary from extracted fields ({len(summary)} chars)")
 
             # Store processed document with ALL enhancements
             processed_doc = {
@@ -826,10 +812,6 @@ async def run_full_ai_pipeline(
                     'issues_found': ocr_validation.get('issues_found', [])
                 },
 
-                # Layout Analysis
-                'layout_regions': layout_enriched if layout_enriched else [],
-                'stamp_detected': any(r.get('class') == 'stamp' for r in layout_enriched) if layout_enriched else False,
-
                 # Signature Detection & Validation
                 'signature_detected': signature_found,
                 'signature_confidence': signature_confidence,
@@ -845,9 +827,9 @@ async def run_full_ai_pipeline(
                 # Entity Recognition
                 'entities': entities,
 
-                # Table Extraction
-                'tables': tables,
-                'table_count': len(tables),
+                # Table Extraction (PPStructure removed — Line Items used instead)
+                'tables': [],
+                'table_count': 0,
 
                 # Summary
                 'summary': summary,

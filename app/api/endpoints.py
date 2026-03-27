@@ -105,6 +105,8 @@ logging.basicConfig(
     handlers=[console_handler, file_handler],
     force=True
 )
+# Explicitly set root level (uvicorn/dictConfig may override to WARNING)
+logging.getLogger().setLevel(logging.INFO)
 
 logger = logging.getLogger("ai_service")
 logger.setLevel(logging.INFO)
@@ -1877,106 +1879,7 @@ Answer:"""
         )
 
 
-@app.post("/api/v1/extract-tables")
-async def extract_tables(
-    file: UploadFile = File(...),
-    doc_id: Optional[str] = Form(None)
-) -> Dict[str, Any]:
-    """
-    Extract tables from uploaded document
-    
-    Args:
-        file: PDF or image file
-        doc_id: Optional document ID to update in MongoDB
-        
-    Returns:
-        Extracted tables with structure and data
-    """
-    try:
-        import tempfile
-        import shutil
-        from app.services.table_extraction import extract_tables_from_image
-        from pdf2image import convert_from_path
-        
-        # Save uploaded file temporarily
-        file_ext = os.path.splitext(file.filename)[1] if file.filename else '.tmp'
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-            shutil.copyfileobj(file.file, tmp_file)
-            tmp_path = tmp_file.name
-        
-        try:
-            all_tables = []
-            
-            # Check if PDF or image
-            if file.filename and file.filename.lower().endswith('.pdf'):
-                # Convert PDF pages to images
-                logger.info(f"Converting PDF to images for table extraction: {file.filename}")
-                # Read OCR DPI from Control Panel config
-                from app.api.config_endpoints import get_runtime_config
-                runtime_config = get_runtime_config()
-                ocr_dpi = runtime_config.get('OCR_DPI', 300)
-                images = convert_from_path(tmp_path, dpi=ocr_dpi)
-                
-                for page_num, img in enumerate(images, start=1):
-                    # Save page as temp image
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as page_tmp:
-                        img.save(page_tmp.name, 'PNG')
-                        page_tmp_path = page_tmp.name
-                    
-                    try:
-                        # Extract tables from page (run in thread to avoid blocking event loop)
-                        page_tables = await asyncio.to_thread(extract_tables_from_image, page_tmp_path)
-                        
-                        # Add page number to each table
-                        for table in page_tables:
-                            table['page'] = page_num
-                            all_tables.append(table)
-                    finally:
-                        os.unlink(page_tmp_path)
-            else:
-                # Single image file
-                logger.info(f"Extracting tables from image: {file.filename}")
-                all_tables = await asyncio.to_thread(extract_tables_from_image, tmp_path)
-                for table in all_tables:
-                    table['page'] = 1
-            
-            # Update MongoDB if doc_id provided
-            if doc_id and db is not None:
-                from bson import ObjectId
-                documents_collection = db['documents']
-                
-                documents_collection.update_one(
-                    {'_id': ObjectId(doc_id)},
-                    {
-                        '$set': {
-                            'extractedMetadata.tables': all_tables,
-                            'extractedMetadata.tableCount': len(all_tables),
-                            'extractedMetadata.tablesExtractedAt': datetime.utcnow()
-                        }
-                    }
-                )
-                logger.info(f"✓ Updated document {doc_id} with {len(all_tables)} tables")
-            
-            return {
-                'success': True,
-                'filename': file.filename,
-                'tables': all_tables,
-                'table_count': len(all_tables),
-                'doc_id': doc_id,
-                'timestamp': datetime.utcnow().isoformat()
-            }
-            
-        finally:
-            # Cleanup temp file
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-        
-    except Exception as e:
-        logger.error(f"Error extracting tables: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Table extraction error: {str(e)}"
-        )
+# PPStructure table extraction endpoint removed — Line Items (OCR + frontend parser) is more accurate
 
 
 # ========================
@@ -2066,7 +1969,11 @@ def _ocr_extract_sync(file_path: str, engine: str, models: Dict[str, Any]) -> Di
     img_array = np.array(img)
     
     # PaddleOCR inference (CPU-bound operation)
-    result = ocr_model.ocr(img_array, cls=True)
+    try:
+        result = ocr_model.ocr(img_array, cls=True)
+    except TypeError:
+        # cls parameter not supported in PP-OCRv5
+        result = ocr_model.ocr(img_array)
     
     # Parse results (supports both PP-OCRv5 dict and legacy list format)
     extracted_text = ""

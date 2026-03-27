@@ -14,6 +14,41 @@ import PyPDF2
 
 logger = logging.getLogger("document_splitter")
 
+# Module-level document type descriptions — used by both embedding classification and LLaMA reasoning
+LABEL_DESCRIPTIONS = {
+    'Invoice': 'Invoice: a billing document with line items, subtotals, tax, total amount, invoice number, and payment terms',
+    'Receipt': 'Receipt: a proof-of-payment document from a merchant with date, items purchased, and total paid',
+    'Purchase Order': 'Purchase Order: a buyer request document listing products, quantities, prices, and delivery terms',
+    'Credit Note': 'Credit Note: a document reducing the amount owed by a buyer, referencing an original invoice',
+    'Debit Note': 'Debit Note: a document increasing the amount owed, typically for additional charges',
+    'Payment Voucher': 'Payment Voucher: an authorization document for a payment with payee, amount, and account codes',
+    'Bank Statement': 'Bank Statement: a financial summary from a bank showing transactions, deposits, withdrawals, and balance',
+    'Financial Statement': 'Financial Statement: a formal report of financial activities such as income statement, balance sheet, or cash flow',
+    'Tax Document': 'Tax Document: a government or accounting form related to tax filing, deductions, or tax certificates',
+    'Contract': 'Contract: a legally binding agreement between parties with terms, obligations, signatures, and effective dates',
+    'Agreement': 'Agreement: a mutual arrangement between parties outlining shared terms and conditions',
+    'Non-Disclosure Agreement': 'Non-Disclosure Agreement: a confidentiality contract restricting sharing of proprietary information',
+    'Memorandum of Understanding': 'Memorandum of Understanding: a formal but non-binding document outlining mutual intentions between parties',
+    'Certificate': 'Certificate: an official document attesting to a fact, qualification, or status',
+    'License': 'License: an official permit granting authorization to perform an activity or use property',
+    'Permit': 'Permit: a government-issued document authorizing a specific activity or construction',
+    'Report': 'Report: a structured document presenting findings, analysis, data, or recommendations',
+    'Business Letter': 'Business Letter: formal correspondence between organizations or individuals on business matters',
+    'Memo': 'Memo: an internal communication document within an organization',
+    'Proposal': 'Proposal: a document suggesting a plan, project, or business offer for consideration',
+    'Quotation': 'Quotation: a document listing prices for requested goods or services',
+    'Tender Document': 'Tender Document: a formal bid submission in response to a procurement request',
+    'Form': 'Form: a structured document with fields to be filled in, such as an application or registration form',
+    'Delivery Note': 'Delivery Note: a document accompanying goods being delivered, listing items and quantities',
+    'Packing Slip': 'Packing Slip: a document inside a shipment listing the contents of the package',
+    'Bill of Lading': 'Bill of Lading: a shipping document issued by a carrier detailing cargo, origin, and destination',
+    'Shipping Document': 'Shipping Document: paperwork related to the transport and delivery of goods',
+    'Resume': 'Resume: a personal document summarizing work experience, education, and skills for job applications',
+    'Job Application': 'Job Application: a formal request for employment including personal and professional details',
+    'Employment Contract': 'Employment Contract: a legal agreement specifying terms of employment between employer and employee',
+    'Other': 'Other: a document that does not clearly fit any specific category',
+}
+
 
 def pdf_to_images(pdf_path: str) -> List[Image.Image]:
     """
@@ -46,6 +81,206 @@ def pdf_to_images(pdf_path: str) -> List[Image.Image]:
     except Exception as e:
         logger.error(f"Error converting PDF to images: {e}")
         raise
+
+
+def _sort_text_by_position(text_lines, dt_polys, rec_scores=None):
+    """
+    Sort OCR text lines by spatial position for proper reading order.
+    Groups lines into rows by Y-center, then sorts left-to-right within each row.
+    Detects column gaps to read each column top-to-bottom.
+    
+    Returns reconstructed text string.
+    """
+    if not text_lines or not dt_polys:
+        return "\n".join(text_lines)
+    
+    # Calculate center Y and min X for each text line
+    items = []
+    for i, (text, poly) in enumerate(zip(text_lines, dt_polys)):
+        poly_arr = np.array(poly)
+        if poly_arr.ndim == 2 and poly_arr.shape[0] >= 4:
+            y_center = float(poly_arr[:, 1].mean())
+            x_min = float(poly_arr[:, 0].min())
+            x_max = float(poly_arr[:, 0].max())
+            height = float(poly_arr[:, 1].max() - poly_arr[:, 1].min())
+        else:
+            y_center = 0.0
+            x_min = 0.0
+            x_max = 0.0
+            height = 20.0
+        score = rec_scores[i] if rec_scores and i < len(rec_scores) else 0.5
+        items.append({
+            'text': text, 'y': y_center, 'x_min': x_min, 'x_max': x_max,
+            'height': max(height, 5.0), 'score': score, 'idx': i
+        })
+    
+    if not items:
+        return "\n".join(text_lines)
+    
+    # Determine median line height for row-grouping tolerance
+    heights = [it['height'] for it in items]
+    median_h = sorted(heights)[len(heights) // 2] if heights else 20.0
+    row_tolerance = median_h * 0.85  # Lines within 85% of median height are "same row"
+    
+    # Sort all items by Y first
+    items.sort(key=lambda it: it['y'])
+    
+    # Group into rows using running-mean Y (handles gradual drift across wide rows)
+    rows = []
+    current_row = [items[0]]
+    current_row_y_sum = items[0]['y']
+    for it in items[1:]:
+        row_mean_y = current_row_y_sum / len(current_row)
+        if abs(it['y'] - row_mean_y) <= row_tolerance:
+            current_row.append(it)
+            current_row_y_sum += it['y']
+        else:
+            rows.append(current_row)
+            current_row = [it]
+            current_row_y_sum = it['y']
+    rows.append(current_row)
+    
+    # Merge orphan rows (1 item) into nearest multi-item row if close enough
+    merge_tolerance = median_h * 1.5
+    merged_rows = []
+    for row in rows:
+        if len(row) == 1:
+            orphan = row[0]
+            # Find nearest row (by Y distance) that has 2+ items or is also a single
+            best_idx = -1
+            best_dist = float('inf')
+            for mi, mrow in enumerate(merged_rows):
+                mrow_y = sum(it['y'] for it in mrow) / len(mrow)
+                dist = abs(orphan['y'] - mrow_y)
+                # Only merge if orphan doesn't overlap in X with existing items
+                orphan_x_center = (orphan['x_min'] + orphan['x_max']) / 2
+                x_overlap = any(
+                    it['x_min'] - median_h <= orphan_x_center <= it['x_max'] + median_h
+                    for it in mrow
+                )
+                if dist < best_dist and dist < merge_tolerance and not x_overlap:
+                    best_dist = dist
+                    best_idx = mi
+            if best_idx >= 0:
+                merged_rows[best_idx].append(orphan)
+            else:
+                merged_rows.append(row)
+        else:
+            merged_rows.append(row)
+    rows = merged_rows
+    
+    # Sort items within each row by X position (left to right)
+    for row in rows:
+        row.sort(key=lambda it: it['x_min'])
+    
+    # Detect columns: check if page has consistent vertical gaps
+    # Collect all X ranges to find column boundaries
+    all_x_ranges = [(it['x_min'], it['x_max']) for it in items]
+    if all_x_ranges:
+        page_width = max(x[1] for x in all_x_ranges)
+    else:
+        page_width = 1000
+    
+    # Check for multi-column layout: look for large X gaps in rows with 2+ items
+    col_gaps = []
+    gap_clusters = []
+    for row in rows:
+        if len(row) >= 2:
+            for j in range(len(row) - 1):
+                gap = row[j + 1]['x_min'] - row[j]['x_max']
+                if gap > median_h * 1.2:  # Gap bigger than 1.2x line height = column boundary
+                    col_gaps.append((row[j]['x_max'] + row[j + 1]['x_min']) / 2)
+    
+    if col_gaps:
+        # Multi-column detected: find the most common gap position
+        col_gaps.sort()
+        # Cluster gap positions (within 5% of page width)
+        cluster_tolerance = page_width * 0.05
+        gap_clusters_with_count = []
+        current_cluster = [col_gaps[0]]
+        for g in col_gaps[1:]:
+            if g - current_cluster[-1] <= cluster_tolerance:
+                current_cluster.append(g)
+            else:
+                gap_clusters_with_count.append((sum(current_cluster) / len(current_cluster), len(current_cluster)))
+                current_cluster = [g]
+        gap_clusters_with_count.append((sum(current_cluster) / len(current_cluster), len(current_cluster)))
+        
+        # Filter: only keep gap positions that appear in at least 3 rows (or 20% of rows)
+        min_rows_required = min(3, max(1, len(rows) // 5))
+        gap_clusters = [pos for pos, count in gap_clusters_with_count if count >= min_rows_required]
+    
+    if col_gaps and gap_clusters:
+        num_columns = len(gap_clusters) + 1
+        
+        # Heuristic: distinguish tables from multi-column page layouts
+        # Tables: 4+ columns, or most rows have consistent item counts
+        # Multi-column: 2 columns with long text blocks
+        is_table = False
+        
+        if num_columns >= 4:
+            # 4+ columns is almost certainly a table, not a newspaper layout
+            is_table = True
+        elif num_columns >= 3:
+            # 3 columns: check if most rows have similar item counts (table pattern)
+            row_item_counts = [len(row) for row in rows if len(row) >= 2]
+            if row_item_counts:
+                median_count = sorted(row_item_counts)[len(row_item_counts) // 2]
+                consistent = sum(1 for c in row_item_counts if abs(c - median_count) <= 1)
+                if consistent >= len(row_item_counts) * 0.5:
+                    is_table = True
+        
+        if is_table:
+            # Table layout: read row-by-row with " | " delimiters between cells
+            result_lines = []
+            for row in rows:
+                if len(row) >= 2:
+                    row_text = " | ".join(it['text'] for it in row if it['text'].strip())
+                else:
+                    row_text = "  ".join(it['text'] for it in row if it['text'].strip())
+                if row_text.strip():
+                    result_lines.append(row_text)
+            return "\n".join(result_lines)
+        else:
+            # True multi-column layout (2 cols, newspaper-style): read column-by-column
+            col_bounds = [0] + gap_clusters + [page_width + 1]
+            
+            columns = [[] for _ in range(len(col_bounds) - 1)]
+            for it in items:
+                x_center = (it['x_min'] + it['x_max']) / 2
+                assigned = False
+                for c_idx in range(len(col_bounds) - 1):
+                    if col_bounds[c_idx] <= x_center < col_bounds[c_idx + 1]:
+                        columns[c_idx].append(it)
+                        assigned = True
+                        break
+                if not assigned:
+                    best_col = 0
+                    best_dist = float('inf')
+                    for c_idx in range(len(col_bounds) - 1):
+                        col_center = (col_bounds[c_idx] + col_bounds[c_idx + 1]) / 2
+                        dist = abs(x_center - col_center)
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_col = c_idx
+                    columns[best_col].append(it)
+            
+            result_parts = []
+            for col in columns:
+                col.sort(key=lambda it: it['y'])
+                col_text = "\n".join(it['text'] for it in col if it['text'].strip())
+                if col_text.strip():
+                    result_parts.append(col_text)
+            
+            return "\n\n".join(result_parts)
+    else:
+        # Single-column: just read rows top-to-bottom, left-to-right
+        result_lines = []
+        for row in rows:
+            row_text = "  ".join(it['text'] for it in row if it['text'].strip())
+            if row_text.strip():
+                result_lines.append(row_text)
+        return "\n".join(result_lines)
 
 
 def extract_text_from_image(image: Image.Image, paddleocr, return_confidence: bool = False):
@@ -87,14 +322,19 @@ def extract_text_from_image(image: Image.Image, paddleocr, return_confidence: bo
         # Extract text and confidence scores from result
         text_lines = []
         rec_scores = []
+        dt_polys = []  # Bounding box polygons for spatial ordering
         
         if result and len(result) > 0 and result[0]:
             ocr_data = result[0]
             
             # PaddleOCR 3.3.2+ returns OCRResult dict with rec_texts and rec_scores
             if isinstance(ocr_data, dict) and 'rec_texts' in ocr_data:
-                text_lines = ocr_data['rec_texts']
-                rec_scores = ocr_data.get('rec_scores', [])  # Capture confidence scores
+                text_lines = list(ocr_data['rec_texts'])
+                rec_scores = list(ocr_data.get('rec_scores', []))
+                # Get spatial data: dt_polys (detection polygons) or rec_polys
+                raw_polys = ocr_data.get('dt_polys', ocr_data.get('rec_polys', []))
+                if raw_polys is not None and len(raw_polys) > 0:
+                    dt_polys = [np.array(p) for p in raw_polys]
             else:
                 # Fallback: old format (list of detections)
                 for line in ocr_data:
@@ -107,8 +347,16 @@ def extract_text_from_image(image: Image.Image, paddleocr, return_confidence: bo
                                 rec_scores.append(float(text_part[1]))
                         elif isinstance(text_part, str):
                             text_lines.append(text_part)
+                        # Old format: bbox is the first element
+                        if isinstance(line[0], (list, np.ndarray)):
+                            dt_polys.append(np.array(line[0]))
         
-        extracted_text = " ".join(text_lines)
+        # Spatial reading-order sort using bounding box positions
+        if dt_polys and len(dt_polys) == len(text_lines):
+            extracted_text = _sort_text_by_position(text_lines, dt_polys, rec_scores)
+            # Recalculate scores after sorting (scores reordered inside helper)
+        else:
+            extracted_text = "\n".join(text_lines)
         
         # Calculate confidence metrics
         avg_confidence = sum(rec_scores) / len(rec_scores) if rec_scores else 0.5
@@ -233,7 +481,7 @@ def split_pdf_and_find_breaks(
     for doc_num, (start_page, end_page) in enumerate(
         zip(document_breaks[:-1], document_breaks[1:])
     ):
-        doc_text = " ".join(page_texts[start_page:end_page])
+        doc_text = "\n\n".join(page_texts[start_page:end_page])
         
         # Embed the combined document
         doc_embedding = sentence_transformer.encode(doc_text, convert_to_tensor=False)
@@ -243,7 +491,7 @@ def split_pdf_and_find_breaks(
         doc_pil_images = []
         for page_idx in range(start_page, end_page):
             if page_idx < len(images):
-                # Convert PIL Image to numpy array for PPStructure
+                # Convert PIL Image to numpy array for OCR/pipeline use
                 doc_page_images.append(np.array(images[page_idx]))
                 # Keep PIL reference for pipeline reuse (avoids second PDF conversion)
                 doc_pil_images.append(images[page_idx])
@@ -301,40 +549,8 @@ def classify_text(
             'all_scores': {'Invoice': 0.92, 'Report': 0.05, 'Letter': 0.03}
         }
     """
-    # Description-enriched labels for better embedding similarity matching
-    LABEL_DESCRIPTIONS = {
-        'Invoice': 'Invoice: a billing document with line items, subtotals, tax, total amount, invoice number, and payment terms',
-        'Receipt': 'Receipt: a proof-of-payment document from a merchant with date, items purchased, and total paid',
-        'Purchase Order': 'Purchase Order: a buyer request document listing products, quantities, prices, and delivery terms',
-        'Credit Note': 'Credit Note: a document reducing the amount owed by a buyer, referencing an original invoice',
-        'Debit Note': 'Debit Note: a document increasing the amount owed, typically for additional charges',
-        'Payment Voucher': 'Payment Voucher: an authorization document for a payment with payee, amount, and account codes',
-        'Bank Statement': 'Bank Statement: a financial summary from a bank showing transactions, deposits, withdrawals, and balance',
-        'Financial Statement': 'Financial Statement: a formal report of financial activities such as income statement, balance sheet, or cash flow',
-        'Tax Document': 'Tax Document: a government or accounting form related to tax filing, deductions, or tax certificates',
-        'Contract': 'Contract: a legally binding agreement between parties with terms, obligations, signatures, and effective dates',
-        'Agreement': 'Agreement: a mutual arrangement between parties outlining shared terms and conditions',
-        'Non-Disclosure Agreement': 'Non-Disclosure Agreement: a confidentiality contract restricting sharing of proprietary information',
-        'Memorandum of Understanding': 'Memorandum of Understanding: a formal but non-binding document outlining mutual intentions between parties',
-        'Certificate': 'Certificate: an official document attesting to a fact, qualification, or status',
-        'License': 'License: an official permit granting authorization to perform an activity or use property',
-        'Permit': 'Permit: a government-issued document authorizing a specific activity or construction',
-        'Report': 'Report: a structured document presenting findings, analysis, data, or recommendations',
-        'Business Letter': 'Business Letter: formal correspondence between organizations or individuals on business matters',
-        'Memo': 'Memo: an internal communication document within an organization',
-        'Proposal': 'Proposal: a document suggesting a plan, project, or business offer for consideration',
-        'Quotation': 'Quotation: a document listing prices for requested goods or services',
-        'Tender Document': 'Tender Document: a formal bid submission in response to a procurement request',
-        'Form': 'Form: a structured document with fields to be filled in, such as an application or registration form',
-        'Delivery Note': 'Delivery Note: a document accompanying goods being delivered, listing items and quantities',
-        'Packing Slip': 'Packing Slip: a document inside a shipment listing the contents of the package',
-        'Bill of Lading': 'Bill of Lading: a shipping document issued by a carrier detailing cargo, origin, and destination',
-        'Shipping Document': 'Shipping Document: paperwork related to the transport and delivery of goods',
-        'Resume': 'Resume: a personal document summarizing work experience, education, and skills for job applications',
-        'Job Application': 'Job Application: a formal request for employment including personal and professional details',
-        'Employment Contract': 'Employment Contract: a legal agreement specifying terms of employment between employer and employee',
-        'Other': 'Other: a document that does not clearly fit any specific category',
-    }
+    # Use module-level LABEL_DESCRIPTIONS for consistency with LLaMA classification
+    global LABEL_DESCRIPTIONS
     
     if not candidate_labels:
         candidate_labels = list(LABEL_DESCRIPTIONS.keys())
@@ -374,35 +590,71 @@ def classify_text(
             k: float(v / sum_exp) for k, v in similarities_exp.items()
         }
         
-        # Get top label
-        top_label = max(probabilities, key=probabilities.get)
-        top_score = float(probabilities[top_label])
+        # Keyword boosting: if the document text contains strong keyword matches,
+        # boost those categories before selecting the top label. This prevents
+        # softmax over 31 categories from drowning out obvious matches.
+        KEYWORD_BOOSTS = {
+            'Invoice': ['invoice', 'invoiced to', 'invoice number', 'invoice date', 'inv no', 'inv #'],
+            'Receipt': ['receipt', 'receipt number', 'received from', 'receipt date'],
+            'Purchase Order': ['purchase order', 'po number', 'po #', 'p.o.'],
+            'Credit Note': ['credit note', 'credit memo', 'cn number'],
+            'Debit Note': ['debit note', 'debit memo', 'dn number'],
+            'Contract': ['contract', 'agreement', 'terms and conditions', 'hereby agree'],
+            'Bank Statement': ['bank statement', 'account summary', 'opening balance', 'closing balance'],
+            'Quotation': ['quotation', 'quote number', 'quoted price', 'quote #'],
+            'Delivery Note': ['delivery note', 'delivery order', 'dispatch note'],
+            'Bill of Lading': ['bill of lading', 'b/l number', 'consignment'],
+            'Resume': ['resume', 'curriculum vitae', 'work experience', 'education'],
+            'Tax Document': ['tax return', 'tax certificate', 'tax invoice', 'withholding tax'],
+        }
+        
+        text_lower = text[:3000].lower()
+        boosted_probabilities = dict(probabilities)
+        for label, keywords in KEYWORD_BOOSTS.items():
+            if label in boosted_probabilities:
+                for keyword in keywords:
+                    if keyword in text_lower:
+                        # Strong keyword match: boost this category significantly
+                        boosted_probabilities[label] *= 3.0
+                        logger.info(f"Keyword boost: '{keyword}' found → boosting '{label}'")
+                        break
+        
+        # Re-normalize after boosting
+        boost_sum = sum(boosted_probabilities.values())
+        if boost_sum > 0:
+            boosted_probabilities = {k: v / boost_sum for k, v in boosted_probabilities.items()}
+        
+        # Get top label from boosted probabilities
+        top_label = max(boosted_probabilities, key=boosted_probabilities.get)
+        top_score = float(boosted_probabilities[top_label])
+        
+        # Raw cosine similarity (0.0-1.0) — more intuitive than softmax probability
+        raw_similarity = float(similarities[top_label])
         
         # Get minimum confidence threshold from Control Panel config
         from app.api.config_endpoints import get_runtime_config
         runtime_config = get_runtime_config()
         MIN_CONFIDENCE_THRESHOLD = runtime_config.get('CLASSIFICATION_MIN_CONFIDENCE', 0.08)
         
-        # If confidence is too low, classify as "Unknown" or "Other"
-        # Note: With 10 categories + softmax, even clear documents get 10-25% scores
-        # Only flag as "Other" if confidence is extremely low (default < 8%, configurable in Control Panel)
+        # If confidence is too low even after keyword boosting, classify as "Other"
         if top_score < MIN_CONFIDENCE_THRESHOLD:
             logger.info(f"Very low confidence ({top_score:.2%}) for '{top_label}', classifying as 'Other'")
-            # Check if 'Other' exists in candidates, otherwise use 'Unknown'
-            fallback_label = 'Other' if 'Other' in probabilities else 'Unknown'
+            fallback_label = 'Other' if 'Other' in boosted_probabilities else 'Unknown'
             return {
                 'label': fallback_label,
-                'score': top_score,  # Keep original score for transparency
-                'all_scores': probabilities,
+                'score': raw_similarity,
+                'softmax_score': top_score,
+                'all_scores': boosted_probabilities,
                 'low_confidence': True,
                 'original_prediction': top_label
             }
         
         return {
-            'label': top_label,  # Just the label, no confidence in display
-            'score': top_score,
-            'confidence': top_score,  # For internal use
-            'all_scores': probabilities
+            'label': top_label,
+            'score': raw_similarity,  # Raw cosine similarity (0.5-0.8 range)
+            'confidence': raw_similarity,
+            'softmax_score': top_score,
+            'all_scores': boosted_probabilities
         }
         
     except Exception as e:
@@ -458,17 +710,20 @@ async def classify_with_reasoning(
 
         # Prepare reasoning prompt
         doc_type = initial_classification['label']
-        confidence = initial_classification['score']
-        original_confidence = initial_classification['score']
+        # Use softmax score for threshold comparison — raw cosine (0.3-0.8) is always above threshold
+        softmax_score = initial_classification.get('softmax_score', 0.0)
+        confidence = initial_classification['score']  # Raw cosine for display
+        original_confidence = softmax_score  # Softmax for threshold comparison
         
         # Get low confidence threshold from Control Panel config
         from app.api.config_endpoints import get_runtime_config
         config = get_runtime_config()
         low_confidence_threshold = config.get('CLASSIFICATION_LOW_CONFIDENCE_THRESHOLD', 0.15)
         
-        # If confidence is very low, ask Llama to determine the type
-        if confidence < low_confidence_threshold:  # Below threshold (default 15%)
-            prompt = f"""What type of document is this? Choose from: Invoice, Contract, Receipt, Report, Letter, Form, Agreement, Statement, Certificate, Other.
+        # If softmax confidence is low, ask Llama to determine the type
+        all_type_names = ', '.join(LABEL_DESCRIPTIONS.keys())
+        if original_confidence < low_confidence_threshold:  # Below threshold (default 15%)
+            prompt = f"""What type of document is this? Choose EXACTLY one from this list: {all_type_names}.
 
 Document text (first 800 characters):
 {text[:800]}
@@ -524,13 +779,28 @@ Response:"""
                 indicators_str = line.replace('Key indicators:', '').strip()
                 key_indicators = [ind.strip() for ind in indicators_str.split(',')]
 
-        # Override classification if initial confidence was very low and Llama provided a type
+        # Override classification if initial softmax confidence was low and Llama provided a type
         if original_confidence < low_confidence_threshold and llama_doc_type:
-            logger.info(f"✓ Overriding low-confidence classification: '{doc_type}' ({confidence:.2%}) → '{llama_doc_type}' (Llama)")
-            doc_type = llama_doc_type
-            # Read override confidence from Control Panel
-            override_confidence = config.get('LLAMA_OVERRIDE_CONFIDENCE', 0.85)
-            confidence = override_confidence  # Set higher confidence for Llama override
+            # Normalize LLaMA response to match a known label
+            valid_labels = list(LABEL_DESCRIPTIONS.keys())
+            matched_label = None
+            llama_lower = llama_doc_type.lower().strip()
+            for label in valid_labels:
+                if label.lower() == llama_lower:
+                    matched_label = label
+                    break
+            if not matched_label:
+                # Fuzzy match: check if LLaMA response contains or is contained by a label
+                for label in valid_labels:
+                    if llama_lower in label.lower() or label.lower() in llama_lower:
+                        matched_label = label
+                        break
+            if matched_label:
+                logger.info(f"✓ LLaMA override: '{doc_type}' → '{matched_label}' (embedding softmax was {original_confidence:.2%})")
+                doc_type = matched_label
+                confidence = 0.85  # Assign reasonable confidence for LLaMA-determined type
+            else:
+                logger.warning(f"LLaMA returned unknown type '{llama_doc_type}', keeping embedding result '{doc_type}'")
 
         # Validate classification
         validated = len(key_indicators) >= 2 and len(reasoning) > 20
@@ -585,7 +855,7 @@ def extract_text_basic(pdf_file_path: str, models: Dict[str, Any]) -> Dict[str, 
     try:
         images = convert_from_path(
             pdf_file_path,
-            dpi=200,
+            dpi=300,
             poppler_path=poppler_path if poppler_path and os.path.exists(poppler_path) else None
         )
     except Exception as e:
@@ -633,7 +903,6 @@ def extract_text_basic(pdf_file_path: str, models: Dict[str, Any]) -> Dict[str, 
 
 
 # DEPRECATED: Legacy Florence-2 signature detection (not used in current pipeline)
-# Signature detection now handled by YOLOv8n in pipeline_worker.py
 # def find_signature(image: Image.Image, models: Dict[str, Any]) -> Dict[str, Any]:
 #     ...
 #     (code removed - see git history if needed)

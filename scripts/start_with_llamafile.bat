@@ -25,7 +25,7 @@ echo   GPU: Enabled (auto-detect)
 echo   Context: 8192 tokens
 echo.
 
-start "Llamafile Server" "%LLAMAFILE%" --server --host 127.0.0.1 --port 8080 -ngl 999 -c 8192 --nobrowser
+start "Llamafile Server" "%LLAMAFILE%" --server --host 127.0.0.1 --port 8080 -ngl 999 -c 8192 --parallel 2 --nobrowser
 
 timeout /t 5 /nobreak > nul
 

@@ -136,6 +136,7 @@ def start_llamafile():
                 "--port", "8080",
                 "-ngl", "999",  # Use all GPU layers
                 "-c", "8192",   # Context window
+                "--parallel", "2",  # 2 concurrent inference slots
                 "--nobrowser"
             ],
             stdout=log_file,

@@ -8,7 +8,7 @@ import torch
 
 logger = logging.getLogger("signature_ocr")
 
-# signature boxes are expected from YOLOv8n upstream; no local detector import
+
 
 
 def crop_image(image_bgr: np.ndarray, box: Tuple[int, int, int, int]) -> Image.Image:

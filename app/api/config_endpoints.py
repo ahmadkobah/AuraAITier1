@@ -16,12 +16,11 @@ All features are ENABLED by default unless explicitly disabled:
 1. ENABLE_PDF_SPLITTING         - Split multi-document PDFs into logical documents
 2. ENABLE_OCR_VALIDATION        - Validate OCR text quality with Llama
 3. ENABLE_CLASSIFICATION        - Classify document type (31 categories)
-4. ENABLE_SIGNATURE_DETECTION   - Detect signature regions with YOLOv8n
-5. ENABLE_SIGNATURE_VALIDATION  - Validate and OCR signatures with TrOCR
+4. ENABLE_SIGNATURE_DETECTION   - Detect signatures via text pattern matching
+5. ENABLE_SIGNATURE_VALIDATION  - Validate signatures with LLaMA
 6. ENABLE_STRUCTURED_EXTRACTION - Extract invoice/receipt structured data
 7. ENABLE_ENTITY_EXTRACTION     - Extract companies, people, dates, amounts
-8. ENABLE_TABLE_EXTRACTION      - Extract tables with PPStructure + LLaMA validation
-9. ENABLE_SUMMARY               - Generate summaries with Llama 3.2 3B
+8. ENABLE_SUMMARY               - Generate summaries with Llama 3.2 3B
 10. ENABLE_EMBEDDING_GENERATION - Generate embeddings for semantic search
 11. ENABLE_MONGODB_STORAGE      - Store processed data in MongoDB
 
@@ -52,7 +51,6 @@ USAGE EXAMPLES:
       -H "Content-Type: application/json" \
       -d '{
         "ENABLE_SIGNATURE_DETECTION": true,
-        "YOLO_CONFIDENCE": 0.7,
         "OCR_DPI": 200
       }'
     
@@ -141,7 +139,6 @@ RUNTIME_CONFIG = {
     "ENABLE_SIGNATURE_VALIDATION": os.getenv('ENABLE_SIGNATURE_VALIDATION', 'true').lower() == 'true',
     "ENABLE_STRUCTURED_EXTRACTION": os.getenv('ENABLE_STRUCTURED_EXTRACTION', 'true').lower() == 'true',
     "ENABLE_ENTITY_EXTRACTION": os.getenv('ENABLE_ENTITY_EXTRACTION', 'true').lower() == 'true',
-    "ENABLE_TABLE_EXTRACTION": os.getenv('ENABLE_TABLE_EXTRACTION', 'true').lower() == 'true',
     "ENABLE_SUMMARY": os.getenv('ENABLE_SUMMARY', 'true').lower() == 'true',
     "ENABLE_EMBEDDING_GENERATION": os.getenv('ENABLE_EMBEDDING_GENERATION', 'true').lower() == 'true',
     "ENABLE_MONGODB_STORAGE": os.getenv('ENABLE_MONGODB_STORAGE', 'true').lower() == 'true',
@@ -149,14 +146,13 @@ RUNTIME_CONFIG = {
     # Processing Parameters (4 existing)
     "SIMILARITY_THRESHOLD": float(os.getenv('SIMILARITY_THRESHOLD', '0.5')),  # Document splitting threshold
     "OCR_DPI": int(os.getenv('OCR_DPI', '300')),                              # Image resolution for OCR
-    "YOLO_CONFIDENCE": float(os.getenv('YOLO_CONFIDENCE', '0.5')),           # Signature detection threshold
     "CLASSIFICATION_MIN_CONFIDENCE": float(os.getenv('CLASSIFICATION_MIN_CONFIDENCE', '0.08')),  # Classification confidence threshold
     
     # Advanced Parameters (14 total - Tier 1 defaults)
     "LLAMA_TEMPERATURE": float(os.getenv('LLAMA_TEMPERATURE', '0.3')),                      # LLaMA creativity (0-1)
     "LLAMA_MAX_TOKENS": int(os.getenv('LLAMA_MAX_TOKENS', '512')),                        # Max summary length
     "OCR_CONFIDENCE_THRESHOLD": int(os.getenv('OCR_CONFIDENCE_THRESHOLD', '50')),          # PaddleOCR quality (0-100)
-    "SIGNATURE_CONFIDENCE_THRESHOLD": float(os.getenv('SIGNATURE_CONFIDENCE_THRESHOLD', '0.6')),  # YOLOv8n threshold
+    "SIGNATURE_CONFIDENCE_THRESHOLD": float(os.getenv('SIGNATURE_CONFIDENCE_THRESHOLD', '0.6')),  # Signature confidence threshold
     "SEARCH_TOP_K_DEFAULT": int(os.getenv('SEARCH_TOP_K_DEFAULT', '5')),                  # Search results count
     "MAX_GPU_MEMORY_MB": int(os.getenv('MAX_GPU_MEMORY_MB', '4096')),                     # GPU memory limit
     "GPU_LAYERS": int(os.getenv('GPU_LAYERS', '29')),                                      # LLaMA GPU layers
@@ -193,14 +189,6 @@ RUNTIME_CONFIG = {
     "OCR_ROUTING_MEDIUM_THRESHOLD": float(os.getenv('OCR_ROUTING_MEDIUM_THRESHOLD', '0.75')),  # Light validation if confidence between this and skip threshold
     "OCR_ROUTING_LOW_THRESHOLD": float(os.getenv('OCR_ROUTING_LOW_THRESHOLD', '0.50')),  # Full LLaMA validation if confidence between this and medium threshold
     
-    # Table Extraction Parameters (3 new)
-    "TABLE_EXTRACTION_TIMEOUT": int(os.getenv('TABLE_EXTRACTION_TIMEOUT', '20')),         # HTTP timeout for llamafile
-    "TABLE_EXTRACTION_TEMPERATURE": float(os.getenv('TABLE_EXTRACTION_TEMPERATURE', '0.2')),  # Table extraction precision
-    "TABLE_EXTRACTION_MAX_TOKENS": int(os.getenv('TABLE_EXTRACTION_MAX_TOKENS', '1500')),  # Table data extraction tokens
-    
-    # YOLO Detection Parameters (1 new)
-    "YOLO_IOU_THRESHOLD": float(os.getenv('YOLO_IOU_THRESHOLD', '0.45')),                 # Non-maximum suppression threshold
-    
     # Classification Parameters (1 new)
     "LLAMA_OVERRIDE_CONFIDENCE": float(os.getenv('LLAMA_OVERRIDE_CONFIDENCE', '0.85')),   # Confidence when LLaMA overrides classification
     
@@ -224,7 +212,6 @@ class ConfigUpdateRequest(BaseModel):
     ENABLE_SIGNATURE_VALIDATION: Optional[bool] = None
     ENABLE_STRUCTURED_EXTRACTION: Optional[bool] = None
     ENABLE_ENTITY_EXTRACTION: Optional[bool] = None
-    ENABLE_TABLE_EXTRACTION: Optional[bool] = None
     ENABLE_SUMMARY: Optional[bool] = None
     ENABLE_EMBEDDING_GENERATION: Optional[bool] = None
     ENABLE_MONGODB_STORAGE: Optional[bool] = None
@@ -232,7 +219,6 @@ class ConfigUpdateRequest(BaseModel):
     # Basic Parameters (4)
     SIMILARITY_THRESHOLD: Optional[float] = None
     OCR_DPI: Optional[int] = None
-    YOLO_CONFIDENCE: Optional[float] = None
     CLASSIFICATION_MIN_CONFIDENCE: Optional[float] = None
     
     # Advanced Parameters (14 total)
@@ -275,14 +261,6 @@ class ConfigUpdateRequest(BaseModel):
     # Smart OCR Routing Thresholds (2 new)
     OCR_ROUTING_MEDIUM_THRESHOLD: Optional[float] = None
     OCR_ROUTING_LOW_THRESHOLD: Optional[float] = None
-    
-    # Table Extraction Parameters (3 new)
-    TABLE_EXTRACTION_TIMEOUT: Optional[int] = None
-    TABLE_EXTRACTION_TEMPERATURE: Optional[float] = None
-    TABLE_EXTRACTION_MAX_TOKENS: Optional[int] = None
-    
-    # YOLO Detection Parameters (1 new)
-    YOLO_IOU_THRESHOLD: Optional[float] = None
     
     # Classification Parameters (1 new)
     LLAMA_OVERRIDE_CONFIDENCE: Optional[float] = None
@@ -357,13 +335,6 @@ async def update_config(request: ConfigUpdateRequest):
                     detail="SIMILARITY_THRESHOLD must be between 0.0 and 1.0"
                 )
         
-        if "YOLO_CONFIDENCE" in updates:
-            if not 0.0 <= updates["YOLO_CONFIDENCE"] <= 1.0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="YOLO_CONFIDENCE must be between 0.0 and 1.0"
-                )
-        
         if "OCR_DPI" in updates:
             if updates["OCR_DPI"] < 72 or updates["OCR_DPI"] > 600:
                 raise HTTPException(
@@ -407,7 +378,6 @@ async def reset_config():
         "ENABLE_SUMMARY": os.getenv('ENABLE_SUMMARY', 'false').lower() == 'true',
         "SIMILARITY_THRESHOLD": float(os.getenv('SIMILARITY_THRESHOLD', '0.5')),
         "OCR_DPI": int(os.getenv('OCR_DPI', '300')),
-        "YOLO_CONFIDENCE": float(os.getenv('YOLO_CONFIDENCE', '0.5')),
         "last_updated": datetime.utcnow().isoformat(),
         "source": "environment_variables"
     }

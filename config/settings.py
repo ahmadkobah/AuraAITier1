@@ -147,7 +147,6 @@ LLAMA_MAX_TOKENS = 512   # Maximum response length
 MODELS_DIR = BASE_DIR / "models"
 SENTENCE_TRANSFORMERS_DIR = MODELS_DIR / "sentence-transformers"  # Embedding models
 TROCR_MODEL_DIR = MODELS_DIR / "trocr"                             # Handwriting OCR
-YOLO_MODEL_PATH = BASE_DIR / "yolov8n.pt"                         # Signature detection
 
 
 # ========================
@@ -172,7 +171,7 @@ SUPPORTED_FILE_TYPES = [".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif"]
 
 # Confidence thresholds (0-1 or 0-100 depending on model)
 OCR_CONFIDENCE_THRESHOLD = 50           # PaddleOCR confidence (0-100)
-SIGNATURE_CONFIDENCE_THRESHOLD = 0.6    # YOLO detection confidence (0-1)
+SIGNATURE_CONFIDENCE_THRESHOLD = 0.6    # Signature detection confidence (0-1)
 CLASSIFICATION_CONFIDENCE_THRESHOLD = 0.08  # Document type classification (0-1)
 
 

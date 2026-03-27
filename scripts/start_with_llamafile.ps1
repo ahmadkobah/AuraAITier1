@@ -41,6 +41,7 @@ $llamafileArgs = @(
     "--port", "8080",
     "-ngl", "999",  # Offload all layers to GPU
     "-c", "8192",   # Context window
+    "--parallel", "2",  # 2 concurrent inference slots
     "--nobrowser"   # Don't open browser
 )
 
