@@ -615,13 +615,13 @@ async def run_full_ai_pipeline(
                     return {'companies': [], 'people': [], 'dates': [], 'amounts': [], 'addresses': [], 'emails': [], 'phone_numbers': [], 'error': 'timeout'}
 
             async def _do_table_extraction():
-                # PPStructure removed — Line Items (OCR + frontend parser) is more accurate
-                logger.info("  ⏸️ Table extraction (PPStructure) removed — using Line Items instead")
+                # PPStructure  Line Items (OCR + frontend parser) 
+                logger.info("   Table extraction (PPStructure)  Line Items ")
                 return []
 
             async def _do_summary():
                 if not ENABLE_SUMMARY:
-                    logger.info("  ⏸️ Summary generation disabled")
+                    logger.info("   Summary generation disabled")
                     return ""
                 logger.info("  Generating summary...")
                 if is_llamafile_healthy():
@@ -647,7 +647,7 @@ async def run_full_ai_pipeline(
                     return doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
 
             # Run all 4 independent steps in parallel
-            logger.info("  ⚡ Running extraction + summary steps in parallel...")
+            logger.info("  Running extraction + summary steps in parallel...")
             structured_extraction, entities, tables, summary = await asyncio.gather(
                 _do_structured_extraction(),
                 _do_entity_extraction(),
@@ -827,7 +827,7 @@ async def run_full_ai_pipeline(
                 # Entity Recognition
                 'entities': entities,
 
-                # Table Extraction (PPStructure removed — Line Items used instead)
+                # Table Extraction 
                 'tables': [],
                 'table_count': 0,
 

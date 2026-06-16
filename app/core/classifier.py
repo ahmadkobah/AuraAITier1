@@ -534,21 +534,7 @@ def classify_text(
     models: Dict[str, Any],
     candidate_labels: List[str] = None
 ) -> Dict[str, Any]:
-    """
-    Classify document text using zero-shot classification
-    
-    Args:
-        text: Document text to classify
-        models: Dictionary with loaded models
-        candidate_labels: List of possible document types
-        
-    Returns:
-        {
-            'label': 'Invoice',
-            'score': 0.92,
-            'all_scores': {'Invoice': 0.92, 'Report': 0.05, 'Letter': 0.03}
-        }
-    """
+
     # Use module-level LABEL_DESCRIPTIONS for consistency with LLaMA classification
     global LABEL_DESCRIPTIONS
     

@@ -160,8 +160,8 @@ RUNTIME_CONFIG = {
     
     # LLaMA Validation Parameters (6 existing)
     "OCR_VALIDATION_TIMEOUT": int(os.getenv('OCR_VALIDATION_TIMEOUT', '30')),             # OCR validation timeout (seconds)
-    "OCR_VALIDATION_TEMPERATURE": float(os.getenv('OCR_VALIDATION_TEMPERATURE', '0.05')),  # ✨ Ultra-low to preserve formatting
-    "OCR_VALIDATION_MAX_TOKENS": int(os.getenv('OCR_VALIDATION_MAX_TOKENS', '2500')),     # ✨ Full page support
+    "OCR_VALIDATION_TEMPERATURE": float(os.getenv('OCR_VALIDATION_TEMPERATURE', '0.05')),  #  Ultra-low to preserve formatting
+    "OCR_VALIDATION_MAX_TOKENS": int(os.getenv('OCR_VALIDATION_MAX_TOKENS', '2500')),     #  Full page support
     "CLASSIFICATION_TIMEOUT": int(os.getenv('CLASSIFICATION_TIMEOUT', '45')),              # Classification timeout (seconds)
     "CLASSIFICATION_REASONING_TEMPERATURE": float(os.getenv('CLASSIFICATION_REASONING_TEMPERATURE', '0.3')),  # Classification LLaMA temp
     "CLASSIFICATION_LOW_CONFIDENCE_THRESHOLD": float(os.getenv('CLASSIFICATION_LOW_CONFIDENCE_THRESHOLD', '0.15')),  # Low confidence threshold
