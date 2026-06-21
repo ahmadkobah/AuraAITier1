@@ -25,6 +25,8 @@ def apply_regex_fixes(text: str) -> Tuple[str, int]:
     
     # Common OCR error patterns: (pattern, replacement, description)
     patterns = [
+        # 0 (zero) -> O (letter) at the start of a word, e.g. 0ctober
+        (r'\b0(?=[a-zA-Z])', 'O', '0->O at word start'),
         # 0 (zero) → O (letter) when surrounded by letters
         (r'(?<=[a-zA-Z])0(?=[a-zA-Z])', 'O', '0→O in word'),
         # O (letter) → 0 (zero) when surrounded by digits

@@ -85,17 +85,18 @@ async def delete_document(doc_id: str):
     Delete a document from AI Service MongoDB and invalidate FAISS index.
     Called by Aura BE when a user deletes a document.
     """
-    from app.api.endpoints import safe_doc_id
+    from app.api.endpoints import mongo_doc_id, safe_doc_id
     from app.utils.vector_index import invalidate as invalidate_faiss
 
     database = _get_db()
     documents = database["documents"]
 
     # Try both ObjectId and raw string to cover all stored formats
-    oid = safe_doc_id(doc_id)
+    oid = mongo_doc_id(doc_id)
+    safe_id = safe_doc_id(doc_id)
     result = documents.delete_one({"_id": oid})
-    if result.deleted_count == 0 and oid != doc_id:
-        result = documents.delete_one({"_id": doc_id})
+    if result.deleted_count == 0 and oid != safe_id:
+        result = documents.delete_one({"_id": safe_id})
 
     # Invalidate FAISS so deleted embeddings are dropped on next rebuild
     invalidate_faiss()

@@ -58,18 +58,35 @@ def validate_file_path(file_path: str) -> str:
     return resolved
 
 
-def safe_doc_id(doc_id: str):
+def safe_doc_id(doc_id: str) -> str:
     """
-    Convert a document ID string to ObjectId if valid, otherwise return raw string.
-    Handles both ObjectId hex strings and arbitrary string IDs consistently.
+    Sanitize a document ID for logging and fallback string lookups.
+    Mongo ObjectId conversion is handled separately by mongo_doc_id().
     """
     from bson import ObjectId
+
+    if doc_id is None:
+        return ""
+    if isinstance(doc_id, ObjectId):
+        return str(doc_id)
+
+    value = str(doc_id).strip().replace("\x00", "")
+    return "".join(ch for ch in value if ch not in "<>\"'`;")
+
+
+def mongo_doc_id(doc_id: str):
+    """
+    Return an ObjectId for valid Mongo IDs, otherwise the sanitized string ID.
+    """
+    from bson import ObjectId
+
     if isinstance(doc_id, ObjectId):
         return doc_id
-    try:
-        return ObjectId(doc_id)
-    except Exception:
-        return doc_id
+
+    safe_id = safe_doc_id(doc_id)
+    if ObjectId.is_valid(safe_id):
+        return ObjectId(safe_id)
+    return safe_id
 
 # Configure logging - Write to both console AND file with NO BUFFERING
 import logging.handlers
@@ -745,7 +762,7 @@ async def upload_and_process_document(
             )
         documents = db['documents']
         documents.update_one(
-            {'_id': safe_doc_id(doc_id)},
+            {'_id': mongo_doc_id(doc_id)},
             {
                 '$set': {
                     'status': 'PENDING',
@@ -826,7 +843,7 @@ async def get_document_status(doc_id: str) -> DocumentStatusResponse:
         from bson import ObjectId
         
         # Convert string ID to ObjectId (try both formats for backward compatibility)
-        doc_obj_id = safe_doc_id(doc_id)
+        doc_obj_id = mongo_doc_id(doc_id)
         
         # Check documents collection
         if db is None:
@@ -1639,7 +1656,7 @@ async def query_document(request: QueryRequest) -> QueryResponse:
         logger.info(f"🔍 About to query document: {request.doc_id}")
         
         try:
-            obj_id = safe_doc_id(request.doc_id)
+            obj_id = mongo_doc_id(request.doc_id)
             logger.info(f"✅ Document ID resolved: {obj_id}")
             doc = documents.find_one({'_id': obj_id})
             # Fallback: try raw string if ObjectId lookup failed
